@@ -9,6 +9,7 @@ from pathlib import Path
 
 from enviro_webcam_ml import db
 from enviro_webcam_ml.capture import capture_once
+from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
 from enviro_webcam_ml.weather.open_meteo import fetch_forecast
@@ -75,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-initial-weather",
         action="store_true",
         help="Do not fetch weather immediately on startup.",
+    )
+    collector.add_argument(
+        "--disable-clock-sanity",
+        action="store_true",
+        help="Disable wall-clock sanity checks. Not recommended for unattended collection.",
     )
     collector.add_argument(
         "--max-iterations",
@@ -152,18 +158,41 @@ def cmd_run_collector(args: argparse.Namespace) -> int:
         if config.weather.fetch_on_start and not args.skip_initial_weather
         else time.monotonic() + weather_interval
     )
+    clock_sanity = config.collector.clock_sanity
+    clock_checker = None
+    if clock_sanity.enabled and not args.disable_clock_sanity:
+        clock_checker = ClockSanityChecker(
+            max_drift_seconds=clock_sanity.max_drift_seconds,
+            max_backward_seconds=clock_sanity.max_backward_seconds,
+        )
     iteration = 0
 
     print(
         "collector started "
         f"cameras={','.join(camera.id for camera in cameras)} "
         f"capture_interval_seconds={capture_interval} "
-        f"weather_interval_seconds={weather_interval}"
+        f"weather_interval_seconds={weather_interval} "
+        f"clock_sanity={'on' if clock_checker else 'off'}"
     )
 
     while True:
         iteration += 1
         now = time.monotonic()
+
+        if clock_checker:
+            clock_result = clock_checker.check(wall_time=datetime.now(timezone.utc), monotonic_time=now)
+            if not clock_result.ok:
+                print(
+                    f"[{utc_timestamp()}] clock sanity failed: {clock_result.reason}; "
+                    f"wall_delta={format_seconds(clock_result.wall_delta_seconds)} "
+                    f"monotonic_delta={format_seconds(clock_result.monotonic_delta_seconds)} "
+                    f"drift={format_seconds(clock_result.drift_seconds)}. "
+                    "Skipping capture/weather cycle."
+                )
+                if args.max_iterations is not None and iteration >= args.max_iterations:
+                    return 0
+                time.sleep(clock_sanity.retry_seconds)
+                continue
 
         if now >= next_capture_at:
             print(f"[{utc_timestamp()}] capture cycle")
@@ -251,6 +280,12 @@ def positive_interval(value: int, label: str) -> int:
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def format_seconds(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}s"
 
 
 if __name__ == "__main__":

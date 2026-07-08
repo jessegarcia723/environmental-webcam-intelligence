@@ -64,6 +64,15 @@ quality:
   night_luminance_threshold: 35
   blur_variance_threshold: 25
 
+collector:
+  clock_sanity:
+    enabled: true
+    # If system wall-clock time disagrees with monotonic elapsed time by more
+    # than this, skip the cycle instead of writing bad timestamps.
+    max_drift_seconds: 120
+    max_backward_seconds: 1
+    retry_seconds: 60
+
 tasks:
   - id: marine_layer_detection
     positive_label: clouds_below_peak

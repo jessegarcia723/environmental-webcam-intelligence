@@ -44,6 +44,8 @@ On a MacBook, wrap it with `caffeinate` so the machine stays awake:
 caffeinate -dimsu envirocam run-collector --config configs/mount_tam.yaml
 ```
 
+`run-collector` includes a clock sanity check. It compares system UTC time against Python's monotonic timer before writing data. If your Mac clock freezes, jumps backward, or jumps far ahead, the collector prints a warning, skips that capture/weather cycle, waits 60 seconds, and tries again. This prevents obviously bad timestamps from polluting the dataset.
+
 If you only want webcam images and no scheduled weather fetches, use `capture-loop`:
 
 ```bash

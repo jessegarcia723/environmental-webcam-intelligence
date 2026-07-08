@@ -54,6 +54,19 @@ class QualityConfig:
 
 
 @dataclass(frozen=True)
+class ClockSanityConfig:
+    enabled: bool = True
+    max_drift_seconds: float = 120.0
+    max_backward_seconds: float = 1.0
+    retry_seconds: int = 60
+
+
+@dataclass(frozen=True)
+class CollectorConfig:
+    clock_sanity: ClockSanityConfig
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     name: str
     database_path: Path
@@ -67,6 +80,7 @@ class AppConfig:
     cameras: tuple[CameraConfig, ...]
     weather: WeatherConfig
     quality: QualityConfig
+    collector: CollectorConfig
     raw: dict[str, Any]
 
     @property
@@ -115,12 +129,24 @@ def load_config(path: str | Path) -> AppConfig:
         blur_variance_threshold=float(quality_raw.get("blur_variance_threshold", 25.0)),
     )
 
+    collector_raw = raw.get("collector") or {}
+    clock_raw = collector_raw.get("clock_sanity") or {}
+    collector = CollectorConfig(
+        clock_sanity=ClockSanityConfig(
+            enabled=as_bool(clock_raw.get("enabled", True)),
+            max_drift_seconds=float(clock_raw.get("max_drift_seconds", 120.0)),
+            max_backward_seconds=float(clock_raw.get("max_backward_seconds", 1.0)),
+            retry_seconds=int(clock_raw.get("retry_seconds", 60)),
+        )
+    )
+
     return AppConfig(
         path=config_path,
         project=project,
         cameras=cameras,
         weather=weather,
         quality=quality,
+        collector=collector,
         raw=raw,
     )
 
@@ -167,3 +193,11 @@ def maybe_float(value: Any) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
