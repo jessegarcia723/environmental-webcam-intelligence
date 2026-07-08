@@ -22,6 +22,7 @@ envirocam init-db --config configs/mount_tam.yaml
 envirocam capture-once --config configs/mount_tam.yaml
 envirocam capture-loop --config configs/mount_tam.yaml --max-iterations 3
 envirocam fetch-weather --config configs/mount_tam.yaml
+envirocam run-collector --config configs/mount_tam.yaml --max-iterations 1
 envirocam build-manifest --config configs/mount_tam.yaml --output data/manifests/mount_tam_frames.csv
 pytest
 ```
@@ -31,7 +32,19 @@ The sample config is wired to the Mount Tam still-frame endpoints embedded on th
 - `Axis-TamEast`: `https://cameras.alertcalifornia.org/public-camera-data/Axis-TamEast/latest-frame.jpg`
 - `Axis-TamWest`: `https://cameras.alertcalifornia.org/public-camera-data/Axis-TamWest/latest-frame.jpg`
 
-For a long-running local collector, omit `--max-iterations`:
+For a long-running local collector, use `run-collector`. It captures webcam frames every 5 minutes and fetches Open-Meteo weather every 2 hours:
+
+```bash
+envirocam run-collector --config configs/mount_tam.yaml
+```
+
+On a MacBook, wrap it with `caffeinate` so the machine stays awake:
+
+```bash
+caffeinate -dimsu envirocam run-collector --config configs/mount_tam.yaml
+```
+
+If you only want webcam images and no scheduled weather fetches, use `capture-loop`:
 
 ```bash
 envirocam capture-loop --config configs/mount_tam.yaml

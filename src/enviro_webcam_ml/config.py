@@ -42,6 +42,8 @@ class CameraConfig:
 class WeatherConfig:
     provider: str = "open_meteo"
     timezone: str = "UTC"
+    fetch_interval_seconds: int = 7200
+    fetch_on_start: bool = True
     hourly_variables: tuple[str, ...] = ()
 
 
@@ -102,6 +104,8 @@ def load_config(path: str | Path) -> AppConfig:
     weather = WeatherConfig(
         provider=weather_raw.get("provider", "open_meteo"),
         timezone=weather_raw.get("timezone", "UTC"),
+        fetch_interval_seconds=int(weather_raw.get("fetch_interval_seconds", 7200)),
+        fetch_on_start=bool(weather_raw.get("fetch_on_start", True)),
         hourly_variables=tuple(weather_raw.get("hourly_variables", ())),
     )
 

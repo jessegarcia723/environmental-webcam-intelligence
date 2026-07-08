@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 
 from enviro_webcam_ml import db
 from enviro_webcam_ml.capture import capture_once
-from enviro_webcam_ml.config import load_config
+from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
 from enviro_webcam_ml.weather.open_meteo import fetch_forecast
 
@@ -53,6 +55,34 @@ def build_parser() -> argparse.ArgumentParser:
     weather.add_argument("--camera-id", help="Limit weather fetch to one camera.")
     weather.set_defaults(func=cmd_fetch_weather)
 
+    collector = sub.add_parser(
+        "run-collector",
+        help="Continuously capture webcam frames and fetch weather on separate schedules.",
+    )
+    collector.add_argument("--config", required=True)
+    collector.add_argument("--camera-id", help="Limit collection to one camera.")
+    collector.add_argument(
+        "--capture-interval-seconds",
+        type=int,
+        help="Override the configured capture interval; useful for testing.",
+    )
+    collector.add_argument(
+        "--weather-interval-seconds",
+        type=int,
+        help="Override the configured weather fetch interval; useful for testing.",
+    )
+    collector.add_argument(
+        "--skip-initial-weather",
+        action="store_true",
+        help="Do not fetch weather immediately on startup.",
+    )
+    collector.add_argument(
+        "--max-iterations",
+        type=int,
+        help="Stop after this many scheduler iterations; useful for smoke tests.",
+    )
+    collector.set_defaults(func=cmd_run_collector)
+
     manifest = sub.add_parser("build-manifest", help="Build a CSV frame manifest for annotation/training.")
     manifest.add_argument("--config", required=True)
     manifest.add_argument("--output", required=True)
@@ -96,7 +126,63 @@ def cmd_capture_loop(args: argparse.Namespace) -> int:
         time.sleep(interval_seconds)
 
 
-def capture_selected(config, cameras) -> None:
+def cmd_run_collector(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    cameras = select_cameras(config.cameras, args.camera_id)
+    if not cameras:
+        raise ValueError("No cameras selected.")
+
+    capture_interval = positive_interval(
+        args.capture_interval_seconds
+        if args.capture_interval_seconds is not None
+        else min(camera.capture.interval_seconds for camera in cameras),
+        "capture interval",
+    )
+    weather_interval = positive_interval(
+        args.weather_interval_seconds
+        if args.weather_interval_seconds is not None
+        else config.weather.fetch_interval_seconds,
+        "weather interval",
+    )
+
+    next_capture_at = 0.0
+    next_weather_at = (
+        0.0
+        if config.weather.fetch_on_start and not args.skip_initial_weather
+        else time.monotonic() + weather_interval
+    )
+    iteration = 0
+
+    print(
+        "collector started "
+        f"cameras={','.join(camera.id for camera in cameras)} "
+        f"capture_interval_seconds={capture_interval} "
+        f"weather_interval_seconds={weather_interval}"
+    )
+
+    while True:
+        iteration += 1
+        now = time.monotonic()
+
+        if now >= next_capture_at:
+            print(f"[{utc_timestamp()}] capture cycle")
+            capture_selected(config, cameras)
+            next_capture_at = now + capture_interval
+
+        if now >= next_weather_at:
+            print(f"[{utc_timestamp()}] weather cycle")
+            fetch_weather_selected(config, cameras)
+            next_weather_at = now + weather_interval
+
+        if args.max_iterations is not None and iteration >= args.max_iterations:
+            return 0
+
+        sleep_for = max(1.0, min(next_capture_at, next_weather_at) - time.monotonic())
+        time.sleep(sleep_for)
+
+
+def capture_selected(config: AppConfig, cameras: Sequence[CameraConfig]) -> None:
     for camera in cameras:
         result = capture_once(config, camera)
         if result.ok:
@@ -107,11 +193,16 @@ def capture_selected(config, cameras) -> None:
 
 def cmd_fetch_weather(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    db.init_db(config.database_path)
+    cameras = select_cameras(config.cameras, args.camera_id)
+    fetch_weather_selected(config, cameras)
+    return 0
+
+
+def fetch_weather_selected(config: AppConfig, cameras: Sequence[CameraConfig]) -> None:
     if config.weather.provider != "open_meteo":
         raise ValueError(f"Unsupported weather provider: {config.weather.provider}")
 
-    db.init_db(config.database_path)
-    cameras = select_cameras(config.cameras, args.camera_id)
     with db.connect(config.database_path) as conn:
         db.register_config(conn, config)
         for camera in cameras:
@@ -132,7 +223,6 @@ def cmd_fetch_weather(args: argparse.Namespace) -> int:
                 records=fetch.records,
             )
             print(f"weather camera={camera.id} provider={fetch.provider} records={count}")
-    return 0
 
 
 def cmd_build_manifest(args: argparse.Namespace) -> int:
@@ -151,6 +241,16 @@ def select_cameras(cameras, camera_id: str | None):
         known = ", ".join(camera.id for camera in cameras)
         raise ValueError(f"Unknown camera_id={camera_id!r}. Known cameras: {known}")
     return selected
+
+
+def positive_interval(value: int, label: str) -> int:
+    if value <= 0:
+        raise ValueError(f"{label} must be > 0 seconds.")
+    return value
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 if __name__ == "__main__":
