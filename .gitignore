@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+
+# Local capture/weather artifacts
+data/**/*.sqlite3
+data/**/*.sqlite3-*
+data/raw/
+data/processed/
+data/manifests/*.csv
+configs/data/
