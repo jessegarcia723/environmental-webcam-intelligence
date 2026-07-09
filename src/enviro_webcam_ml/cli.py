@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from enviro_webcam_ml import db
+from enviro_webcam_ml.annotation import AnnotationServerOptions, serve_annotation_app
 from enviro_webcam_ml.capture import capture_once
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
@@ -93,6 +94,16 @@ def build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("--config", required=True)
     manifest.add_argument("--output", required=True)
     manifest.set_defaults(func=cmd_build_manifest)
+
+    annotate = sub.add_parser("annotate", help="Run the local split-screen annotation web app.")
+    annotate.add_argument("--config", required=True)
+    annotate.add_argument("--host", default="127.0.0.1")
+    annotate.add_argument("--port", type=int, default=8000)
+    annotate.add_argument("--task-id", default="marine_layer_detection")
+    annotate.add_argument("--left-annotator", default="left")
+    annotate.add_argument("--right-annotator", default="right")
+    annotate.add_argument("--open-browser", action="store_true")
+    annotate.set_defaults(func=cmd_annotate)
 
     return parser
 
@@ -259,6 +270,22 @@ def cmd_build_manifest(args: argparse.Namespace) -> int:
     with db.connect(config.database_path) as conn:
         count = build_manifest(conn, Path(args.output))
     print(f"Wrote {count} rows to {Path(args.output).resolve()}")
+    return 0
+
+
+def cmd_annotate(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    serve_annotation_app(
+        config,
+        AnnotationServerOptions(
+            host=args.host,
+            port=args.port,
+            task_id=args.task_id,
+            left_annotator=args.left_annotator,
+            right_annotator=args.right_annotator,
+            open_browser=args.open_browser,
+        ),
+    )
     return 0
 
 

@@ -24,6 +24,7 @@ envirocam capture-loop --config configs/mount_tam.yaml --max-iterations 3
 envirocam fetch-weather --config configs/mount_tam.yaml
 envirocam run-collector --config configs/mount_tam.yaml --max-iterations 1
 envirocam build-manifest --config configs/mount_tam.yaml --output data/manifests/mount_tam_frames.csv
+envirocam annotate --config configs/mount_tam.yaml --open-browser
 pytest
 ```
 
@@ -52,10 +53,36 @@ If you only want webcam images and no scheduled weather fetches, use `capture-lo
 envirocam capture-loop --config configs/mount_tam.yaml
 ```
 
+## Annotation
+
+Run the local split-screen annotation app:
+
+```bash
+envirocam annotate \
+  --config configs/mount_tam.yaml \
+  --left-annotator jesse \
+  --right-annotator partner \
+  --open-browser
+```
+
+Open Chrome to `http://127.0.0.1:8000` if the browser does not open automatically.
+
+Controls:
+
+- Left pane keyboard: `1`, `2`, `3`, `4`, `5`
+- Right pane keyboard: `6`, `7`, `8`, `9`, `0`
+- Xbox controller per pane: `A`, `B`, `X`, `Y`, `LB`
+- Skip current frame: left `Q`, right `P`, or Xbox `RB`
+
+For two Bluetooth Xbox controllers on a MacBook, pair both controllers in macOS Bluetooth settings before opening the app. Chrome is the recommended browser because its Gamepad API support is the most reliable on macOS. The first connected controller controls the left pane; the second connected controller controls the right pane.
+
+Annotations are saved into `data/mount_tam.sqlite3` in the `annotation` table.
+
 ## Current package layout
 
 ```text
 src/enviro_webcam_ml/
+  annotation.py       # local split-screen labeling web app
   capture.py          # webcam image fetch + immutable storage
   cli.py              # envirocam command line entry points
   config.py           # YAML config loading and validation
