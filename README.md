@@ -89,11 +89,11 @@ Current Mount Tam labels:
 - `clouds_below_peak`
 - `no_clouds_below_peak`
 - `peak_obscured`
-- `uncertain`
+- `below_peak_height_far_from_peak`
 - `night_unusable`
 - `camera_artifact`
 
-The older combined label `peak_obscured_uncertain` is intentionally no longer part of the active label set. If it appears in analysis reports, re-review those frames rather than automatically mapping them.
+The older labels `peak_obscured_uncertain` and `uncertain` are intentionally no longer part of the active label set. If either appears in analysis reports, re-review those frames rather than automatically mapping them.
 
 ## Annotation analysis
 

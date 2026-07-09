@@ -56,6 +56,13 @@ def test_analyze_annotations_counts_agreement_disagreement_and_legacy_label(tmp_
             label="peak_obscured_uncertain",
             annotator="jesse",
         )
+        save_annotation(
+            conn,
+            capture_id=third_capture,
+            task_id="marine_layer_detection",
+            label="uncertain",
+            annotator="partner",
+        )
 
         analysis = analyze_annotations(
             conn,
@@ -63,14 +70,14 @@ def test_analyze_annotations_counts_agreement_disagreement_and_legacy_label(tmp_
             task_id="marine_layer_detection",
         )
 
-    assert analysis["annotation_count"] == 5
+    assert analysis["annotation_count"] == 6
     assert analysis["unique_capture_count"] == 3
-    assert analysis["double_labeled_capture_count"] == 2
-    assert analysis["legacy_labels"] == {"peak_obscured_uncertain": 1}
-    assert len(analysis["disagreements"]) == 1
+    assert analysis["double_labeled_capture_count"] == 3
+    assert analysis["legacy_labels"] == {"peak_obscured_uncertain": 1, "uncertain": 1}
+    assert len(analysis["disagreements"]) == 2
     assert analysis["disagreements"][0]["capture_id"] == second_capture
     assert len(analysis["pair_agreements"]) == 1
-    assert analysis["pair_agreements"][0].overlap_count == 2
+    assert analysis["pair_agreements"][0].overlap_count == 3
     assert analysis["pair_agreements"][0].agreement_count == 1
 
 

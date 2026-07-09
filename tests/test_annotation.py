@@ -20,7 +20,7 @@ def test_task_labels_use_config_order() -> None:
         "clouds_below_peak",
         "no_clouds_below_peak",
         "peak_obscured",
-        "uncertain",
+        "below_peak_height_far_from_peak",
         "night_unusable",
         "camera_artifact",
     ]

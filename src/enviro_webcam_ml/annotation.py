@@ -18,7 +18,8 @@ from enviro_webcam_ml.config import AppConfig
 DEFAULT_LABELS = [
     "clouds_below_peak",
     "no_clouds_below_peak",
-    "peak_obscured_uncertain",
+    "peak_obscured",
+    "below_peak_height_far_from_peak",
     "night_unusable",
     "camera_artifact",
 ]
