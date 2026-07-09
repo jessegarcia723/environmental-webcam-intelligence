@@ -73,6 +73,9 @@ Controls:
 - Right pane keyboard: `6`, `7`, `8`, `9`, `0`
 - Xbox controller per pane: `A`, `B`, `X`, `Y`, `LB`
 - Skip current frame: left `Q`, right `P`, or Xbox `RB`
+- Undo last saved annotation from the current session: left `Z`, right `O`, or Xbox `View/Back`
+
+The app shows the full keyboard/Xbox mapping inside each annotation pane. Undo is per annotator: if the left annotator undoes a label, it removes only that annotator's row for that image and leaves the other person's annotation untouched.
 
 For two Bluetooth Xbox controllers on a MacBook, pair both controllers in macOS Bluetooth settings before opening the app. Chrome is the recommended browser because its Gamepad API support is the most reliable on macOS. The first connected controller controls the left pane; the second connected controller controls the right pane.
 

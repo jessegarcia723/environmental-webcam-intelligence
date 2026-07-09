@@ -5,6 +5,7 @@ from PIL import Image
 from enviro_webcam_ml import db
 from enviro_webcam_ml.annotation import (
     annotation_stats,
+    delete_annotation,
     next_unannotated_frame,
     save_annotation,
     task_labels,
@@ -143,3 +144,50 @@ def test_save_annotation_updates_same_annotator_row(tmp_path: Path) -> None:
 
     assert [row["label"] for row in rows] == ["no_clouds_below_peak"]
     assert stats["totals"] == [{"annotator": "jesse", "count": 1}]
+
+
+def test_delete_annotation_removes_only_matching_annotator(tmp_path: Path) -> None:
+    db_path = tmp_path / "annotations.sqlite3"
+    db.init_db(db_path)
+    with db.connect(db_path) as conn:
+        capture_id = db.insert_capture(
+            conn,
+            camera_id="camera",
+            pose_version="initial",
+            captured_at_utc="2026-07-08T12:00:00+00:00",
+            requested_url="https://example.test/1.jpg",
+            http_status=200,
+            content_type="image/jpeg",
+            byte_count=100,
+            sha256="abc",
+            error=None,
+        )
+        save_annotation(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            label="clouds_below_peak",
+            annotator="jesse",
+        )
+        save_annotation(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            label="no_clouds_below_peak",
+            annotator="partner",
+        )
+
+        deleted = delete_annotation(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            annotator="jesse",
+        )
+        rows = conn.execute(
+            "SELECT annotator, label FROM annotation ORDER BY annotator"
+        ).fetchall()
+
+    assert deleted is True
+    assert [dict(row) for row in rows] == [
+        {"annotator": "partner", "label": "no_clouds_below_peak"}
+    ]

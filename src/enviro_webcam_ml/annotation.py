@@ -80,6 +80,8 @@ def make_handler(config: AppConfig, options: AnnotationServerOptions):
             parsed = urlparse(self.path)
             if parsed.path == "/api/annotate":
                 self.handle_annotate()
+            elif parsed.path == "/api/unannotate":
+                self.handle_unannotate()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -161,6 +163,25 @@ def make_handler(config: AppConfig, options: AnnotationServerOptions):
                 )
             self.send_json({"ok": True})
 
+        def handle_unannotate(self) -> None:
+            try:
+                payload = self.read_json()
+                capture_id = int(payload["capture_id"])
+                task_id = str(payload.get("task_id") or options.task_id)
+                annotator = str(payload.get("annotator") or "")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, f"Invalid unannotation payload: {exc}")
+                return
+
+            with db.connect(config.database_path) as conn:
+                deleted = delete_annotation(
+                    conn,
+                    capture_id=capture_id,
+                    task_id=task_id,
+                    annotator=annotator,
+                )
+            self.send_json({"ok": True, "deleted": deleted})
+
         def read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length)
@@ -201,6 +222,7 @@ def annotation_config_payload(config: AppConfig, options: AnnotationServerOption
                 "Y": "label 4",
                 "LB": "label 5",
                 "RB": "skip",
+                "View/Back": "undo last annotation",
             },
         },
     }
@@ -323,6 +345,25 @@ def save_annotation(
         """,
         (capture_id, task_id, label, annotator, confidence, notes, now),
     )
+
+
+def delete_annotation(
+    conn: sqlite3.Connection,
+    *,
+    capture_id: int,
+    task_id: str,
+    annotator: str,
+) -> bool:
+    cur = conn.execute(
+        """
+        DELETE FROM annotation
+        WHERE capture_id = ?
+          AND task_id = ?
+          AND COALESCE(annotator, '') = ?
+        """,
+        (capture_id, task_id, annotator),
+    )
+    return bool(cur.rowcount)
 
 
 def annotation_stats(conn: sqlite3.Connection, *, task_id: str) -> dict[str, Any]:
@@ -493,6 +534,30 @@ ANNOTATION_HTML = r"""<!doctype html>
       flex-wrap: wrap;
       gap: 0.6rem;
     }
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.4rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.25;
+    }
+    .legend span {
+      display: block;
+      padding: 0.35rem 0.45rem;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #10182a;
+    }
+    .legend kbd {
+      color: var(--text);
+      background: #263250;
+      border: 1px solid #3a4a70;
+      border-radius: 4px;
+      padding: 0.05rem 0.28rem;
+      font-size: 0.72rem;
+      white-space: nowrap;
+    }
     .buttons {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -511,6 +576,7 @@ ANNOTATION_HTML = r"""<!doctype html>
     }
     button:hover { border-color: var(--accent); }
     button.skip { color: var(--warn); }
+    button.undo { color: #93c5fd; }
     .toast {
       min-height: 1.2rem;
       color: var(--accent);
@@ -537,6 +603,7 @@ ANNOTATION_HTML = r"""<!doctype html>
       <div class="image-wrap" id="leftImageWrap"></div>
       <div class="controls">
         <div class="metadata" id="leftMeta"></div>
+        <div class="legend" id="leftLegend"></div>
         <div class="buttons" id="leftButtons"></div>
         <div class="toast" id="leftToast"></div>
       </div>
@@ -550,6 +617,7 @@ ANNOTATION_HTML = r"""<!doctype html>
       <div class="image-wrap" id="rightImageWrap"></div>
       <div class="controls">
         <div class="metadata" id="rightMeta"></div>
+        <div class="legend" id="rightLegend"></div>
         <div class="buttons" id="rightButtons"></div>
         <div class="toast" id="rightToast"></div>
       </div>
@@ -573,6 +641,8 @@ ANNOTATION_HTML = r"""<!doctype html>
 
     const xboxButtons = [0, 1, 2, 3, 4]; // A, B, X, Y, LB
     const skipButton = 5; // RB
+    const undoButton = 8; // View/Back on standard Xbox mappings
+    const xboxNames = ["A", "B", "X", "Y", "LB"];
 
     async function init() {
       const config = await fetchJson("/api/config");
@@ -583,7 +653,9 @@ ANNOTATION_HTML = r"""<!doctype html>
       document.getElementById("leftAnnotator").textContent = config.left_annotator;
       document.getElementById("rightAnnotator").textContent = config.right_annotator;
       document.getElementById("globalStatus").textContent =
-        `Task: ${config.task_id} · Xbox: A/B/X/Y/LB label, RB skip`;
+        `Task: ${config.task_id} · Xbox: A/B/X/Y/LB label · RB skip · View/Back undo`;
+      renderLegend("left");
+      renderLegend("right");
       renderButtons("left");
       renderButtons("right");
       await Promise.all([loadNext("left"), loadNext("right")]);
@@ -601,15 +673,38 @@ ANNOTATION_HTML = r"""<!doctype html>
       state.labels.forEach((label, index) => {
         const button = document.createElement("button");
         const key = keyboard[side][index] || "";
-        button.textContent = `${key ? key + " · " : ""}${pretty(label)}`;
+        const xbox = xboxNames[index] || "";
+        button.textContent = `${key ? key + " · " : ""}${xbox ? xbox + " · " : ""}${pretty(label)}`;
         button.addEventListener("click", () => annotate(side, label));
         target.appendChild(button);
       });
       const skip = document.createElement("button");
       skip.className = "skip";
-      skip.textContent = side === "left" ? "Q · Skip" : "P · Skip";
+      skip.textContent = side === "left" ? "Q · RB · Skip" : "P · RB · Skip";
       skip.addEventListener("click", () => skipFrame(side));
       target.appendChild(skip);
+      const undo = document.createElement("button");
+      undo.className = "undo";
+      undo.textContent = side === "left" ? "Z · View · Undo" : "O · View · Undo";
+      undo.addEventListener("click", () => undoLast(side));
+      target.appendChild(undo);
+    }
+
+    function renderLegend(side) {
+      const target = document.getElementById(`${side}Legend`);
+      const keyList = keyboard[side];
+      const labelHints = state.labels.map((label, index) => {
+        const key = keyList[index] || "—";
+        const xbox = xboxNames[index] || "—";
+        return `<span><kbd>${escapeHtml(key)}</kbd> / <kbd>${escapeHtml(xbox)}</kbd> ${escapeHtml(pretty(label))}</span>`;
+      });
+      const skipKey = side === "left" ? "Q" : "P";
+      const undoKey = side === "left" ? "Z" : "O";
+      target.innerHTML = [
+        ...labelHints,
+        `<span><kbd>${skipKey}</kbd> / <kbd>RB</kbd> skip frame</span>`,
+        `<span><kbd>${undoKey}</kbd> / <kbd>View</kbd> undo last saved label</span>`,
+      ].join("");
     }
 
     async function loadNext(side) {
@@ -662,7 +757,7 @@ ANNOTATION_HTML = r"""<!doctype html>
           label,
           annotator: pane.annotator,
         });
-        pane.history.push(captureId);
+        pane.history.push({ captureId, label });
         toast(side, `Saved ${pretty(label)} for #${captureId}`);
         await loadNext(side);
         refreshStats();
@@ -676,6 +771,28 @@ ANNOTATION_HTML = r"""<!doctype html>
       await loadNext(side);
     }
 
+    async function undoLast(side) {
+      const pane = state.panes[side];
+      const last = pane.history.pop();
+      if (!last) {
+        toast(side, "Nothing to undo yet", true);
+        return;
+      }
+      try {
+        await postJson("/api/unannotate", {
+          capture_id: last.captureId,
+          task_id: state.taskId,
+          annotator: pane.annotator,
+        });
+        toast(side, `Undid ${pretty(last.label)} for #${last.captureId}`);
+        await loadNext(side);
+        refreshStats();
+      } catch (error) {
+        pane.history.push(last);
+        toast(side, error.message, true);
+      }
+    }
+
     function onKeydown(event) {
       const key = event.key;
       if (key.toLowerCase() === "q") {
@@ -684,6 +801,14 @@ ANNOTATION_HTML = r"""<!doctype html>
       }
       if (key.toLowerCase() === "p") {
         skipFrame("right");
+        return;
+      }
+      if (key.toLowerCase() === "z") {
+        undoLast("left");
+        return;
+      }
+      if (key.toLowerCase() === "o") {
+        undoLast("right");
         return;
       }
       for (const side of ["left", "right"]) {
@@ -714,6 +839,9 @@ ANNOTATION_HTML = r"""<!doctype html>
       });
       if (pressed[skipButton] && !pane.lastButtons[skipButton]) {
         skipFrame(side);
+      }
+      if (pressed[undoButton] && !pane.lastButtons[undoButton]) {
+        undoLast(side);
       }
       pane.lastButtons = pressed;
     }
