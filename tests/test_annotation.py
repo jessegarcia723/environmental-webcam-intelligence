@@ -19,7 +19,8 @@ def test_task_labels_use_config_order() -> None:
     assert task_labels(config, "marine_layer_detection") == [
         "clouds_below_peak",
         "no_clouds_below_peak",
-        "peak_obscured_uncertain",
+        "peak_obscured",
+        "uncertain",
         "night_unusable",
         "camera_artifact",
     ]

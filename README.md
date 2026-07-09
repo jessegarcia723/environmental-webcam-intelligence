@@ -25,6 +25,7 @@ envirocam fetch-weather --config configs/mount_tam.yaml
 envirocam run-collector --config configs/mount_tam.yaml --max-iterations 1
 envirocam build-manifest --config configs/mount_tam.yaml --output data/manifests/mount_tam_frames.csv
 envirocam annotate --config configs/mount_tam.yaml --open-browser
+envirocam analyze-annotations --config configs/mount_tam.yaml
 pytest
 ```
 
@@ -83,11 +84,59 @@ If only one controller appears, press a button on both controllers while the ann
 
 Annotations are saved into `data/mount_tam.sqlite3` in the `annotation` table.
 
+Current Mount Tam labels:
+
+- `clouds_below_peak`
+- `no_clouds_below_peak`
+- `peak_obscured`
+- `uncertain`
+- `night_unusable`
+- `camera_artifact`
+
+The older combined label `peak_obscured_uncertain` is intentionally no longer part of the active label set. If it appears in analysis reports, re-review those frames rather than automatically mapping them.
+
+## Annotation analysis
+
+Generate a multi-rater annotation report:
+
+```bash
+envirocam analyze-annotations --config configs/mount_tam.yaml
+```
+
+This writes:
+
+- `data/reports/annotation_analysis.md`
+- `data/reports/disagreements.csv`
+
+The report includes label counts, per-annotator totals, overlapping double-labeled frame counts, pairwise agreement, Cohen's kappa, disagreements, and legacy labels that are no longer in the current config.
+
+## Google Drive / multi-Mac workflow
+
+Recommended setup:
+
+1. Keep the old MacBook as the always-on collector.
+2. Let it store live capture data locally in `data/`.
+3. Sync immutable image files to Google Drive if desired.
+4. Do not put the live SQLite database directly inside a continuously synced Google Drive folder.
+5. Instead, periodically create a safe database snapshot and sync that snapshot.
+
+Example safe database backup:
+
+```bash
+envirocam backup-db \
+  --config configs/mount_tam.yaml \
+  --output "$HOME/Library/CloudStorage/GoogleDrive-YOURACCOUNT/My Drive/envirocam/mount_tam.sqlite3"
+```
+
+The exact Google Drive path may differ depending on how Google Drive for Desktop is installed. The key idea is: the collector writes the live DB locally, and Google Drive receives periodic backup copies.
+
 ## Current package layout
 
 ```text
 src/enviro_webcam_ml/
   annotation.py       # local split-screen labeling web app
+  annotation_analysis.py # annotation counts, agreement, disagreement reports
+  backup.py           # safe SQLite snapshot backups
   capture.py          # webcam image fetch + immutable storage
   cli.py              # envirocam command line entry points
   config.py           # YAML config loading and validation

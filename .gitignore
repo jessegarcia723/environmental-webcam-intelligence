@@ -10,4 +10,5 @@ data/**/*.sqlite3-*
 data/raw/
 data/processed/
 data/manifests/*.csv
+data/reports/
 configs/data/

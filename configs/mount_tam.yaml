@@ -78,13 +78,16 @@ tasks:
     labels:
       - clouds_below_peak
       - no_clouds_below_peak
-      - peak_obscured_uncertain
+      - peak_obscured
+      - uncertain
       - night_unusable
       - camera_artifact
     positive_label: clouds_below_peak
     negative_labels:
       - no_clouds_below_peak
     uncertain_labels:
-      - peak_obscured_uncertain
+      - uncertain
       - night_unusable
       - camera_artifact
+    obscured_labels:
+      - peak_obscured

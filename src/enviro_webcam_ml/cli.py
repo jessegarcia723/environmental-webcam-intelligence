@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from enviro_webcam_ml import db
+from enviro_webcam_ml.annotation_analysis import (
+    analyze_annotations,
+    write_analysis_markdown,
+    write_disagreements_csv,
+)
 from enviro_webcam_ml.annotation import AnnotationServerOptions, serve_annotation_app
+from enviro_webcam_ml.backup import backup_sqlite_database
 from enviro_webcam_ml.capture import capture_once
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
@@ -104,6 +110,21 @@ def build_parser() -> argparse.ArgumentParser:
     annotate.add_argument("--right-annotator", default="right")
     annotate.add_argument("--open-browser", action="store_true")
     annotate.set_defaults(func=cmd_annotate)
+
+    analysis = sub.add_parser(
+        "analyze-annotations",
+        help="Analyze annotation counts, multi-rater agreement, and disagreements.",
+    )
+    analysis.add_argument("--config", required=True)
+    analysis.add_argument("--task-id", default="marine_layer_detection")
+    analysis.add_argument("--output", default="data/reports/annotation_analysis.md")
+    analysis.add_argument("--disagreements-output", default="data/reports/disagreements.csv")
+    analysis.set_defaults(func=cmd_analyze_annotations)
+
+    backup = sub.add_parser("backup-db", help="Write a consistent SQLite database snapshot.")
+    backup.add_argument("--config", required=True)
+    backup.add_argument("--output", required=True)
+    backup.set_defaults(func=cmd_backup_db)
 
     return parser
 
@@ -286,6 +307,38 @@ def cmd_annotate(args: argparse.Namespace) -> int:
             open_browser=args.open_browser,
         ),
     )
+    return 0
+
+
+def cmd_analyze_annotations(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    with db.connect(config.database_path) as conn:
+        analysis = analyze_annotations(conn, config=config, task_id=args.task_id)
+
+    output_path = Path(args.output)
+    disagreements_output_path = Path(args.disagreements_output)
+    write_analysis_markdown(analysis, output_path)
+    write_disagreements_csv(analysis["disagreements"], disagreements_output_path)
+
+    print(f"Wrote annotation analysis to {output_path.resolve()}")
+    print(f"Wrote disagreements CSV to {disagreements_output_path.resolve()}")
+    print(
+        "Summary: "
+        f"annotations={analysis['annotation_count']} "
+        f"unique_captures={analysis['unique_capture_count']} "
+        f"double_labeled={analysis['double_labeled_capture_count']} "
+        f"disagreements={len(analysis['disagreements'])}"
+    )
+    if analysis["legacy_labels"]:
+        print(f"Legacy labels found: {analysis['legacy_labels']}")
+    return 0
+
+
+def cmd_backup_db(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    output_path = Path(args.output)
+    backup_sqlite_database(config.database_path, output_path)
+    print(f"Wrote database backup to {output_path.resolve()}")
     return 0
 
 
