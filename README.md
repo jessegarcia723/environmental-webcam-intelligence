@@ -79,6 +79,8 @@ The app shows the full keyboard/Xbox mapping inside each annotation pane. Undo i
 
 For two Bluetooth Xbox controllers on a MacBook, pair both controllers in macOS Bluetooth settings before opening the app. Chrome is the recommended browser because its Gamepad API support is the most reliable on macOS. The first connected controller controls the left pane; the second connected controller controls the right pane.
 
+If only one controller appears, press a button on both controllers while the annotation page is focused. Some browsers do not expose a controller to the Gamepad API until it has been touched. The app compacts the browser's connected-controller list, so controllers can appear at raw browser indices like `0` and `2` and still map correctly to left/right panes.
+
 Annotations are saved into `data/mount_tam.sqlite3` in the `annotation` table.
 
 ## Current package layout

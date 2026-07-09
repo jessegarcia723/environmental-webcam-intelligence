@@ -653,7 +653,7 @@ ANNOTATION_HTML = r"""<!doctype html>
       document.getElementById("leftAnnotator").textContent = config.left_annotator;
       document.getElementById("rightAnnotator").textContent = config.right_annotator;
       document.getElementById("globalStatus").textContent =
-        `Task: ${config.task_id} · Xbox: A/B/X/Y/LB label · RB skip · View/Back undo`;
+        `Task: ${config.task_id} · Press any button on each Xbox controller to wake browser detection.`;
       renderLegend("left");
       renderLegend("right");
       renderButtons("left");
@@ -821,7 +821,7 @@ ANNOTATION_HTML = r"""<!doctype html>
     }
 
     function pollGamepads() {
-      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const pads = connectedGamepads();
       updateGamepadLabels();
       handleGamepad("left", pads[0]);
       handleGamepad("right", pads[1]);
@@ -847,19 +847,24 @@ ANNOTATION_HTML = r"""<!doctype html>
     }
 
     function updateGamepadLabels() {
-      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const pads = connectedGamepads();
       setGamepadText("left", pads[0]);
       setGamepadText("right", pads[1]);
+    }
+
+    function connectedGamepads() {
+      if (!navigator.getGamepads) return [];
+      return Array.from(navigator.getGamepads()).filter(Boolean);
     }
 
     function setGamepadText(side, pad) {
       const el = document.getElementById(`${side}Gamepad`);
       const number = side === "left" ? 1 : 2;
       if (pad) {
-        el.textContent = `Gamepad ${number}: ${pad.id}`;
+        el.textContent = `Gamepad ${number}: ${pad.id} · browser index ${pad.index}`;
         el.classList.add("connected");
       } else {
-        el.textContent = `Gamepad ${number}: waiting`;
+        el.textContent = `Gamepad ${number}: waiting — press A/B/X/Y`;
         el.classList.remove("connected");
       }
     }
@@ -870,7 +875,9 @@ ANNOTATION_HTML = r"""<!doctype html>
         const payload = await fetchJson(`/api/stats?${params}`);
         const totals = (payload.stats.totals || []).map(row => `${row.annotator || "unknown"}: ${row.count}`).join(" · ");
         if (totals) {
-          document.getElementById("globalStatus").textContent = `Task: ${state.taskId} · ${totals}`;
+          const count = connectedGamepads().length;
+          document.getElementById("globalStatus").textContent =
+            `Task: ${state.taskId} · ${totals} · gamepads detected: ${count}`;
         }
       } catch (_) {
         // Stats are helpful, not critical.
