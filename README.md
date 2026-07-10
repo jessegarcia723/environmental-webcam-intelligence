@@ -268,6 +268,42 @@ envirocam compare-image-models --config configs/mount_tam_training.yaml
 
 Each model's `metadata.json` includes overall, per-label, and per-camera metrics. Each `predictions.csv` includes one row per evaluated image, with `camera_id`, true label, predicted label, confidence, and correctness. Camera comparison groups come from the task config, so this works for other sites/scenarios too.
 
+For the configured `positive_label`, training also reports:
+
+- PPV, also called precision: of the frames predicted positive, how many were truly positive?
+- Sensitivity, also called recall: of the truly positive frames, how many did the model catch?
+- Specificity: of the truly non-positive frames, how many did the model correctly avoid calling positive?
+
+For Mount Tam, the positive label is `clouds_below_peak`. Accuracy is still reported, but PPV/sensitivity/specificity are usually more informative because positive marine-layer examples can be rare.
+
+If you want to emphasize specificity, compare runs rather than permanently cranking one knob. Two useful knobs are:
+
+```bash
+envirocam train-image-model \
+  --config configs/mount_tam_training.yaml \
+  --epochs 8 \
+  --model-name efficientnet_b0 \
+  --pretrained \
+  --device mps \
+  --positive-threshold 0.70
+```
+
+and, more aggressively:
+
+```bash
+envirocam train-image-model \
+  --config configs/mount_tam_training.yaml \
+  --epochs 8 \
+  --model-name efficientnet_b0 \
+  --pretrained \
+  --device mps \
+  --class-weight no_clouds_below_peak=2.0 \
+  --class-weight below_peak_height_far_from_peak=2.0 \
+  --class-weight peak_obscured=2.0
+```
+
+Higher `--positive-threshold` makes the model less willing to call `clouds_below_peak`, which usually increases specificity and lowers sensitivity. Higher non-positive class weights penalize mistakes on non-positive examples more during training, which can also reduce false positives. Neither is automatically “better”; choose based on the PPV/sensitivity/specificity tradeoff in validation/test.
+
 Training-set building and model training both print a split-by-label table, for example:
 
 ```text

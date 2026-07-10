@@ -34,6 +34,8 @@ def comparison_row(metadata_path: Path, *, camera_ids: tuple[str, ...] = ()) -> 
     detailed = metadata.get("detailed_metrics", {})
     val_overall = detailed.get("val", {}).get("overall", {})
     test_overall = detailed.get("test", {}).get("overall", {})
+    val_binary = detailed.get("val", {}).get("binary", {})
+    test_binary = detailed.get("test", {}).get("binary", {})
     test_by_camera = detailed.get("test", {}).get("by_camera", {})
     val_by_camera = detailed.get("val", {}).get("by_camera", {})
 
@@ -56,6 +58,14 @@ def comparison_row(metadata_path: Path, *, camera_ids: tuple[str, ...] = ()) -> 
         "test_count": metadata.get("split_counts", {}).get("test", 0),
         "val_accuracy": val_overall.get("accuracy"),
         "test_accuracy": test_overall.get("accuracy"),
+        "positive_label": metadata.get("positive_label") or test_binary.get("positive_label"),
+        "positive_threshold": metadata.get("positive_threshold"),
+        "val_ppv": val_binary.get("ppv"),
+        "val_sensitivity": val_binary.get("sensitivity"),
+        "val_specificity": val_binary.get("specificity"),
+        "test_ppv": test_binary.get("ppv"),
+        "test_sensitivity": test_binary.get("sensitivity"),
+        "test_specificity": test_binary.get("specificity"),
         "metadata_path": str(metadata_path),
         "predictions_path": metadata.get("predictions_path"),
     }
@@ -99,6 +109,14 @@ def write_comparison_csv(
         "test_count",
         "val_accuracy",
         "test_accuracy",
+        "positive_label",
+        "positive_threshold",
+        "val_ppv",
+        "val_sensitivity",
+        "val_specificity",
+        "test_ppv",
+        "test_sensitivity",
+        "test_specificity",
         *camera_fields,
         "metadata_path",
         "predictions_path",
@@ -119,12 +137,22 @@ def write_comparison_markdown(
     if not camera_ids:
         camera_ids = camera_ids_from_rows(rows)
     camera_headers = [f"Test `{camera_id}`" for camera_id in camera_ids]
-    header = ["Run", "Model", "Pretrained", "Val accuracy", "Test accuracy", *camera_headers]
+    header = [
+        "Run",
+        "Model",
+        "Pretrained",
+        "Val accuracy",
+        "Test accuracy",
+        "Test PPV",
+        "Test sensitivity",
+        "Test specificity",
+        *camera_headers,
+    ]
     lines = [
         "# Image model comparison",
         "",
         "| " + " | ".join(header) + " |",
-        "| " + " | ".join(["---", "---", "---:", "---:", "---:", *(["---:"] * len(camera_ids))]) + " |",
+        "| " + " | ".join(["---", "---", "---:", "---:", "---:", "---:", "---:", "---:", *(["---:"] * len(camera_ids))]) + " |",
     ]
     if rows:
         for row in rows:
@@ -134,6 +162,9 @@ def write_comparison_markdown(
                 str(row["pretrained"]),
                 format_metric(row["val_accuracy"]),
                 format_metric(row["test_accuracy"]),
+                format_metric(row.get("test_ppv")),
+                format_metric(row.get("test_sensitivity")),
+                format_metric(row.get("test_specificity")),
             ]
             for camera_id in camera_ids:
                 values.append(format_metric(row.get(f"test_camera_{safe_column_name(camera_id)}_accuracy")))

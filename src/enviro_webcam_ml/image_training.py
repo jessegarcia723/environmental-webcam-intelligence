@@ -26,6 +26,9 @@ class ImageTrainingOptions:
     device: str = "auto"
     seed: int = 42
     crop_pixels: PixelCrop | dict[str, int] | None = None
+    positive_label: str | None = None
+    positive_threshold: float | None = None
+    class_weights: dict[str, float] | None = None
 
 
 def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
@@ -38,6 +41,9 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
     labels = sorted({row["label"] for row in rows})
     if len(labels) < 2:
         raise ValueError("Need at least two labels to train an image classifier.")
+    if options.positive_label and options.positive_label not in labels:
+        raise ValueError(f"positive_label={options.positive_label!r} is not present in training labels: {labels}")
+    validate_class_weights(options.class_weights or {}, labels)
 
     label_to_idx = {label: index for index, label in enumerate(labels)}
     split_counts = Counter(row["split"] for row in rows)
@@ -84,7 +90,7 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
 
     model = build_model(models, nn, options.model_name, len(labels), options.pretrained)
     model.to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weight_tensor(torch, options.class_weights or {}, labels, device))
     optimizer = optim.AdamW(model.parameters(), lr=options.learning_rate)
 
     history = []
@@ -136,10 +142,25 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
     ):
         if loader is None:
             continue
-        prediction_rows.extend(collect_predictions(torch, model, loader, device, labels, split))
+        prediction_rows.extend(
+            collect_predictions(
+                torch,
+                model,
+                loader,
+                device,
+                labels,
+                split,
+                positive_label=options.positive_label,
+                positive_threshold=options.positive_threshold,
+            )
+        )
 
     detailed_metrics = {
-        split: classification_metrics([row for row in prediction_rows if row["split"] == split], labels)
+        split: classification_metrics(
+            [row for row in prediction_rows if row["split"] == split],
+            labels,
+            positive_label=options.positive_label,
+        )
         for split in ("train", "val", "test")
     }
 
@@ -155,6 +176,9 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
             "image_size": options.image_size,
             "pretrained": options.pretrained,
             "crop_pixels": crop_to_dict(options.crop_pixels),
+            "positive_label": options.positive_label,
+            "positive_threshold": options.positive_threshold,
+            "class_weights": options.class_weights or {},
         },
         checkpoint_path,
     )
@@ -173,6 +197,9 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         "learning_rate": options.learning_rate,
         "image_size": options.image_size,
         "crop_pixels": crop_to_dict(options.crop_pixels),
+        "positive_label": options.positive_label,
+        "positive_threshold": options.positive_threshold,
+        "class_weights": options.class_weights or {},
         "labels": labels,
         "label_to_idx": label_to_idx,
         "split_counts": dict(sorted(split_counts.items())),
@@ -275,6 +302,24 @@ def build_transforms(transforms, image_size: int, *, crop_pixels: PixelCrop | di
     return train_transform, eval_transform
 
 
+def validate_class_weights(class_weights: dict[str, float], labels: list[str]) -> None:
+    unknown = sorted(set(class_weights) - set(labels))
+    if unknown:
+        raise ValueError(f"class_weights contains labels not present in training data: {unknown}")
+    for label, weight in class_weights.items():
+        if weight <= 0:
+            raise ValueError(f"class weight for {label!r} must be > 0.")
+
+
+def class_weight_tensor(torch, class_weights: dict[str, float], labels: list[str], device):
+    if not class_weights:
+        return None
+    weights = [float(class_weights.get(label, 1.0)) for label in labels]
+    if all(weight == 1.0 for weight in weights):
+        return None
+    return torch.tensor(weights, dtype=torch.float32, device=device)
+
+
 def choose_device(torch, requested: str):
     if requested != "auto":
         return torch.device(requested)
@@ -323,15 +368,26 @@ def evaluate(torch, model, loader, criterion, device):
     return metric_summary(total_loss, correct, count)
 
 
-def collect_predictions(torch, model, loader, device, labels: list[str], split: str) -> list[dict[str, Any]]:
+def collect_predictions(
+    torch,
+    model,
+    loader,
+    device,
+    labels: list[str],
+    split: str,
+    *,
+    positive_label: str | None = None,
+    positive_threshold: float | None = None,
+) -> list[dict[str, Any]]:
     model.eval()
     rows = []
+    positive_idx = labels.index(positive_label) if positive_label in labels else None
     with torch.no_grad():
         for images, true_indexes, row_indexes in loader:
             images = images.to(device)
             logits = model(images)
             probabilities = torch.softmax(logits, dim=1).detach().cpu()
-            pred_indexes = torch.argmax(probabilities, dim=1)
+            pred_indexes = decision_indexes(torch, probabilities, labels, positive_idx, positive_threshold)
             true_indexes = true_indexes.detach().cpu()
             row_indexes = row_indexes.detach().cpu()
 
@@ -340,6 +396,11 @@ def collect_predictions(torch, model, loader, device, labels: list[str], split: 
                 true_idx = int(true_indexes[batch_index])
                 pred_idx = int(pred_indexes[batch_index])
                 confidence = float(probabilities[batch_index, pred_idx])
+                positive_probability = (
+                    float(probabilities[batch_index, positive_idx])
+                    if positive_idx is not None
+                    else ""
+                )
                 rows.append(
                     {
                         "split": split,
@@ -349,6 +410,7 @@ def collect_predictions(torch, model, loader, device, labels: list[str], split: 
                         "true_label": labels[true_idx],
                         "pred_label": labels[pred_idx],
                         "confidence": confidence,
+                        "positive_probability": positive_probability,
                         "correct": int(true_idx == pred_idx),
                         "image_path": source_row.get("image_path", ""),
                     }
@@ -356,7 +418,33 @@ def collect_predictions(torch, model, loader, device, labels: list[str], split: 
     return rows
 
 
-def classification_metrics(predictions: list[dict[str, Any]], labels: list[str]) -> dict[str, Any]:
+def decision_indexes(torch, probabilities, labels: list[str], positive_idx: int | None, positive_threshold: float | None):
+    if positive_idx is None or positive_threshold is None:
+        return torch.argmax(probabilities, dim=1)
+
+    if not 0 <= positive_threshold <= 1:
+        raise ValueError("positive_threshold must be between 0 and 1.")
+
+    pred_indexes = []
+    non_positive_indexes = [index for index in range(len(labels)) if index != positive_idx]
+    for row in probabilities:
+        if float(row[positive_idx]) >= positive_threshold:
+            pred_indexes.append(positive_idx)
+        else:
+            if non_positive_indexes:
+                best_non_positive = max(non_positive_indexes, key=lambda index: float(row[index]))
+                pred_indexes.append(best_non_positive)
+            else:
+                pred_indexes.append(int(torch.argmax(row).detach().cpu()))
+    return torch.tensor(pred_indexes)
+
+
+def classification_metrics(
+    predictions: list[dict[str, Any]],
+    labels: list[str],
+    *,
+    positive_label: str | None = None,
+) -> dict[str, Any]:
     overall = prediction_metric_summary(predictions)
     by_label = {
         label: label_metrics(predictions, label)
@@ -369,12 +457,16 @@ def classification_metrics(predictions: list[dict[str, Any]], labels: list[str])
         )
         for camera_id in camera_ids
     }
-    return {
+    result = {
         "overall": overall,
         "by_label": by_label,
         "by_camera": by_camera,
         "confusion_matrix": confusion_matrix(predictions, labels),
     }
+    if positive_label:
+        result["positive_label"] = positive_label
+        result["binary"] = binary_metrics(predictions, positive_label)
+    return result
 
 
 def label_counts_by_split(rows: list[dict[str, str]], labels: list[str]) -> dict[str, dict[str, int]]:
@@ -418,6 +510,40 @@ def label_metrics(predictions: list[dict[str, Any]], label: str) -> dict[str, fl
     }
 
 
+def binary_metrics(predictions: list[dict[str, Any]], positive_label: str) -> dict[str, float | int | None]:
+    true_positive = sum(
+        1 for row in predictions if row["true_label"] == positive_label and row["pred_label"] == positive_label
+    )
+    false_positive = sum(
+        1 for row in predictions if row["true_label"] != positive_label and row["pred_label"] == positive_label
+    )
+    true_negative = sum(
+        1 for row in predictions if row["true_label"] != positive_label and row["pred_label"] != positive_label
+    )
+    false_negative = sum(
+        1 for row in predictions if row["true_label"] == positive_label and row["pred_label"] != positive_label
+    )
+    count = true_positive + false_positive + true_negative + false_negative
+    return {
+        "positive_label": positive_label,
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "true_negative": true_negative,
+        "false_negative": false_negative,
+        "ppv": safe_divide(true_positive, true_positive + false_positive),
+        "sensitivity": safe_divide(true_positive, true_positive + false_negative),
+        "specificity": safe_divide(true_negative, true_negative + false_positive),
+        "prevalence": safe_divide(true_positive + false_negative, count),
+        "count": count,
+    }
+
+
+def safe_divide(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
 def confusion_matrix(predictions: list[dict[str, Any]], labels: list[str]) -> list[dict[str, Any]]:
     rows = []
     for true_label in labels:
@@ -441,6 +567,7 @@ def write_predictions_csv(predictions: list[dict[str, Any]], output_path: Path) 
         "true_label",
         "pred_label",
         "confidence",
+        "positive_probability",
         "correct",
         "image_path",
     ]

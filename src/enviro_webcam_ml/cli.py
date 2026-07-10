@@ -223,6 +223,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_model.add_argument("--pretrained", action="store_true")
     train_model.add_argument("--device", default="auto")
+    train_model.add_argument(
+        "--positive-label",
+        help="Positive class for PPV/sensitivity/specificity. Defaults to task.positive_label with --config.",
+    )
+    train_model.add_argument(
+        "--positive-threshold",
+        type=float,
+        help="Optional probability threshold for predicting the positive class.",
+    )
+    train_model.add_argument(
+        "--class-weight",
+        action="append",
+        default=[],
+        help="Training class weight as LABEL=WEIGHT. Can be passed multiple times.",
+    )
     train_model.set_defaults(func=cmd_train_image_model)
 
     compare_models = sub.add_parser(
@@ -616,6 +631,20 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
         else Path("data/models") / args.model_name
     )
     crop_pixels = config.task_image_crop_pixels(task_id) if config is not None else None
+    positive_label = (
+        args.positive_label
+        if args.positive_label
+        else config.task_positive_label(task_id) if config is not None
+        else None
+    )
+    positive_threshold = (
+        args.positive_threshold
+        if args.positive_threshold is not None
+        else config.task_positive_threshold(task_id) if config is not None
+        else None
+    )
+    class_weights = config.task_class_weights(task_id) if config is not None else {}
+    class_weights.update(parse_class_weight_args(args.class_weight))
     summary = train_image_model(
         ImageTrainingOptions(
             training_csv=training_csv,
@@ -629,6 +658,9 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
             pretrained=args.pretrained,
             device=args.device,
             crop_pixels=crop_pixels,
+            positive_label=positive_label,
+            positive_threshold=positive_threshold,
+            class_weights=class_weights,
         )
     )
     print(f"Wrote checkpoint to {summary['checkpoint_path']}")
@@ -637,6 +669,9 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
     print(f"Device: {summary['device']}")
     print(f"Model: {summary['model_name']}")
     print(f"Crop pixels: {summary['crop_pixels']}")
+    print(f"Positive label: {summary['positive_label']}")
+    print(f"Positive threshold: {summary['positive_threshold']}")
+    print(f"Class weights: {summary['class_weights']}")
     print(f"Labels: {summary['labels']}")
     print(f"Splits: {summary['split_counts']}")
     print("Split labels:")
@@ -649,7 +684,10 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
     print(f"Test: {summary['test']}")
     test_overall = summary["detailed_metrics"]["test"]["overall"]
     test_by_camera = summary["detailed_metrics"]["test"]["by_camera"]
+    test_binary = summary["detailed_metrics"]["test"].get("binary")
     print(f"Test overall detail: {test_overall}")
+    if test_binary:
+        print(f"Test positive-class detail: {test_binary}")
     print(f"Test by camera: {test_by_camera}")
     return 0
 
@@ -682,7 +720,10 @@ def cmd_compare_image_models(args: argparse.Namespace) -> int:
             "Best run: "
             f"{best['run']} model={best['model_name']} "
             f"test_accuracy={best['test_accuracy']} "
-            f"val_accuracy={best['val_accuracy']}"
+            f"val_accuracy={best['val_accuracy']} "
+            f"test_ppv={best.get('test_ppv')} "
+            f"test_sensitivity={best.get('test_sensitivity')} "
+            f"test_specificity={best.get('test_specificity')}"
         )
     else:
         print("No model metadata files found.")
@@ -748,6 +789,25 @@ def positive_interval(value: int, label: str) -> int:
     if value <= 0:
         raise ValueError(f"{label} must be > 0 seconds.")
     return value
+
+
+def parse_class_weight_args(values: list[str]) -> dict[str, float]:
+    weights: dict[str, float] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"Invalid --class-weight {value!r}; expected LABEL=WEIGHT.")
+        label, raw_weight = value.split("=", 1)
+        label = label.strip()
+        if not label:
+            raise ValueError(f"Invalid --class-weight {value!r}; label is empty.")
+        try:
+            weight = float(raw_weight)
+        except ValueError as exc:
+            raise ValueError(f"Invalid --class-weight {value!r}; weight must be numeric.") from exc
+        if weight <= 0:
+            raise ValueError(f"Invalid --class-weight {value!r}; weight must be > 0.")
+        weights[label] = weight
+    return weights
 
 
 def utc_timestamp() -> str:

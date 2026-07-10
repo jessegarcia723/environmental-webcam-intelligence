@@ -9,6 +9,7 @@ from enviro_webcam_ml.image_training import (
     build_model,
     build_transforms,
     choose_device,
+    decision_indexes,
     import_torch_stack,
 )
 
@@ -32,6 +33,9 @@ def predict_image_paths(
     model_name = checkpoint.get("model_name", "resnet18")
     image_size = int(checkpoint.get("image_size", 224))
     crop_pixels = checkpoint.get("crop_pixels")
+    positive_label = checkpoint.get("positive_label")
+    positive_threshold = checkpoint.get("positive_threshold")
+    positive_idx = labels.index(positive_label) if positive_label in labels else None
 
     selected_device = choose_device(torch, device)
     model = build_model(models, nn, model_name, len(labels), pretrained=False)
@@ -55,12 +59,21 @@ def predict_image_paths(
                 image_tensor = eval_transform(image).unsqueeze(0).to(selected_device)
             logits = model(image_tensor)
             probabilities = torch.softmax(logits, dim=1).detach().cpu()[0]
-            pred_idx = int(torch.argmax(probabilities).detach().cpu())
+            pred_idx = int(
+                decision_indexes(
+                    torch,
+                    probabilities.unsqueeze(0),
+                    labels,
+                    positive_idx,
+                    positive_threshold,
+                )[0]
+            )
             predictions[capture_id] = {
                 "split": "adjudication_live",
                 "true_label": "",
                 "pred_label": labels[pred_idx],
                 "confidence": float(probabilities[pred_idx]),
+                "positive_probability": float(probabilities[positive_idx]) if positive_idx is not None else "",
                 "correct": "",
             }
     return predictions

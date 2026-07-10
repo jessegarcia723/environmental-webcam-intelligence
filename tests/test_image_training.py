@@ -4,6 +4,7 @@ from pathlib import Path
 from PIL import Image
 
 from enviro_webcam_ml.image_training import (
+    binary_metrics,
     classification_metrics,
     label_counts_by_split,
     metric_summary,
@@ -100,3 +101,35 @@ def test_classification_metrics_include_label_and_camera_breakdowns() -> None:
     assert metrics["by_camera"]["west"] == {"accuracy": 0.0, "count": 1}
     assert metrics["by_label"]["clouds_below_peak"]["recall"] == 1.0
     assert metrics["by_label"]["no_clouds_below_peak"]["recall"] == 0.0
+
+
+def test_binary_metrics_report_ppv_sensitivity_and_specificity() -> None:
+    predictions = [
+        {"true_label": "positive", "pred_label": "positive"},
+        {"true_label": "positive", "pred_label": "negative"},
+        {"true_label": "negative", "pred_label": "positive"},
+        {"true_label": "negative", "pred_label": "negative"},
+        {"true_label": "other", "pred_label": "negative"},
+    ]
+
+    metrics = binary_metrics(predictions, "positive")
+
+    assert metrics["true_positive"] == 1
+    assert metrics["false_positive"] == 1
+    assert metrics["true_negative"] == 2
+    assert metrics["false_negative"] == 1
+    assert metrics["ppv"] == 0.5
+    assert metrics["sensitivity"] == 0.5
+    assert metrics["specificity"] == 2 / 3
+
+
+def test_classification_metrics_include_binary_block_for_positive_label() -> None:
+    predictions = [
+        {"camera_id": "east", "true_label": "positive", "pred_label": "positive", "correct": 1},
+        {"camera_id": "east", "true_label": "negative", "pred_label": "positive", "correct": 0},
+    ]
+
+    metrics = classification_metrics(predictions, ["negative", "positive"], positive_label="positive")
+
+    assert metrics["positive_label"] == "positive"
+    assert metrics["binary"]["ppv"] == 0.5

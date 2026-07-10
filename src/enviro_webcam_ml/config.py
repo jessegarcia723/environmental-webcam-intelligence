@@ -145,6 +145,25 @@ class AppConfig:
         preprocessing = task.get("image_preprocessing") or {}
         return parse_pixel_crop(preprocessing.get("crop_pixels"))
 
+    def task_positive_label(self, task_id: str | None = None) -> str | None:
+        task = self.task(task_id)
+        label = task.get("positive_label")
+        return str(label) if label else None
+
+    def task_positive_threshold(self, task_id: str | None = None) -> float | None:
+        task = self.task(task_id)
+        training = task.get("training") or {}
+        value = training.get("positive_threshold")
+        if value in (None, ""):
+            return None
+        return float(value)
+
+    def task_class_weights(self, task_id: str | None = None) -> dict[str, float]:
+        task = self.task(task_id)
+        training = task.get("training") or {}
+        weights = training.get("class_weights") or {}
+        return {str(label): float(weight) for label, weight in weights.items()}
+
 
 def resolve_relative(base: Path, path: Path) -> Path:
     path = Path(os.path.expandvars(os.path.expanduser(str(path))))
