@@ -9,6 +9,7 @@ from typing import Any
 
 from enviro_webcam_ml.annotation import task_labels
 from enviro_webcam_ml.config import AppConfig
+from enviro_webcam_ml.image_paths import resolve_image_path
 
 
 DEFAULT_EXCLUDED_LABELS: set[str] = set()
@@ -176,23 +177,6 @@ def adjudication_labels(conn: sqlite3.Connection, *, task_id: str) -> dict[int, 
         (task_id,),
     ).fetchall()
     return {int(row["capture_id"]): str(row["final_label"]) for row in rows}
-
-
-def resolve_image_path(stored_path: str | None, data_dir: Path) -> Path | None:
-    if not stored_path:
-        return None
-    path = Path(stored_path)
-    if path.exists():
-        return path
-    if not path.is_absolute():
-        return (data_dir / path).resolve()
-
-    parts = path.parts
-    data_indexes = [index for index, part in enumerate(parts) if part == "data"]
-    if data_indexes:
-        suffix = Path(*parts[data_indexes[-1] + 1 :])
-        return (data_dir / suffix).resolve()
-    return path
 
 
 def assign_stratified_chronological_splits(

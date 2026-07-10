@@ -7,6 +7,7 @@ from enviro_webcam_ml.annotation import (
     adjudication_report,
     annotation_stats,
     delete_annotation,
+    image_path_for_capture,
     load_model_predictions,
     next_unannotated_frame,
     next_adjudication_case,
@@ -111,6 +112,42 @@ def test_next_unannotated_frame_skips_existing_annotator_label(tmp_path: Path) -
         )
         assert other_annotator_first is not None
         assert other_annotator_first["capture_id"] == first_capture_id
+
+
+def test_image_path_for_capture_remaps_old_data_root(tmp_path: Path) -> None:
+    db_path = tmp_path / "annotations.sqlite3"
+    data_dir = tmp_path / "synced" / "data"
+    image_path = data_dir / "raw" / "mount_tam_east_peak" / "frame.jpg"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), color=(120, 130, 140)).save(image_path)
+    old_path = "/Users/old/environmental-webcam-intelligence/data/raw/mount_tam_east_peak/frame.jpg"
+
+    db.init_db(db_path)
+    with db.connect(db_path) as conn:
+        capture_id = db.insert_capture(
+            conn,
+            camera_id="mount_tam_east_peak",
+            pose_version="initial",
+            captured_at_utc="2026-07-08T12:00:00+00:00",
+            requested_url="https://example.test/1.jpg",
+            http_status=200,
+            content_type="image/jpeg",
+            byte_count=100,
+            sha256="abc",
+            error=None,
+        )
+        db.insert_image_asset(
+            conn,
+            capture_id=capture_id,
+            path=Path(old_path),
+            sha256="abc",
+            width=8,
+            height=8,
+        )
+
+        resolved = image_path_for_capture(conn, capture_id, data_dir=data_dir)
+
+    assert resolved == str(image_path.resolve())
 
 
 def test_save_annotation_updates_same_annotator_row(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from enviro_webcam_ml import db
 from enviro_webcam_ml.config import AppConfig
+from enviro_webcam_ml.image_paths import resolve_image_path
 
 
 DEFAULT_LABELS = [
@@ -129,6 +130,7 @@ def make_handler(config: AppConfig, options: AnnotationServerOptions):
                     task_id=task_id,
                     annotator=annotator,
                     exclude_ids=exclude_ids,
+                    data_dir=config.data_dir,
                 )
             self.send_json({"frame": row})
 
@@ -148,7 +150,7 @@ def make_handler(config: AppConfig, options: AnnotationServerOptions):
                 return
 
             with db.connect(config.database_path) as conn:
-                image_path = image_path_for_capture(conn, capture_id)
+                image_path = image_path_for_capture(conn, capture_id, data_dir=config.data_dir)
             if image_path is None:
                 self.send_error(HTTPStatus.NOT_FOUND, "Image not found")
                 return
@@ -301,6 +303,7 @@ def make_adjudication_handler(
                     task_id=options.task_id,
                     predictions=predictions,
                     annotators=options.annotators,
+                    data_dir=config.data_dir,
                     include_agreements=options.include_agreements,
                 )
             self.send_json({"case": row})
@@ -323,7 +326,7 @@ def make_adjudication_handler(
                 return
 
             with db.connect(config.database_path) as conn:
-                image_path = image_path_for_capture(conn, capture_id)
+                image_path = image_path_for_capture(conn, capture_id, data_dir=config.data_dir)
             if image_path is None:
                 self.send_error(HTTPStatus.NOT_FOUND, "Image not found")
                 return
@@ -427,6 +430,7 @@ def next_unannotated_frame(
     task_id: str,
     annotator: str,
     exclude_ids: list[int] | None = None,
+    data_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     exclude_ids = exclude_ids or []
     exclude_clause = ""
@@ -472,13 +476,14 @@ def next_unannotated_frame(
     if row is None:
         return None
     flags = row["flags_json"]
+    image_path = resolved_or_stored_image_path(row["image_path"], data_dir)
     return {
         "capture_id": row["capture_id"],
         "camera_id": row["camera_id"],
         "pose_version": row["pose_version"],
         "captured_at_utc": row["captured_at_utc"],
         "image_url": f"/image/{row['capture_id']}",
-        "image_path": row["image_path"],
+        "image_path": image_path,
         "width": row["width"],
         "height": row["height"],
         "avg_luminance": row["avg_luminance"],
@@ -576,10 +581,17 @@ def next_adjudication_case(
     task_id: str,
     predictions: dict[int, dict[str, Any]] | None = None,
     annotators: tuple[str, ...] = (),
+    data_dir: Path | None = None,
     include_agreements: bool = False,
 ) -> dict[str, Any] | None:
     predictions = predictions or {}
-    for case in adjudication_cases(conn, task_id=task_id, predictions=predictions, annotators=annotators):
+    for case in adjudication_cases(
+        conn,
+        task_id=task_id,
+        predictions=predictions,
+        annotators=annotators,
+        data_dir=data_dir,
+    ):
         if case["already_adjudicated"]:
             continue
         if not include_agreements and case["agreement"]:
@@ -594,6 +606,7 @@ def adjudication_cases(
     task_id: str,
     predictions: dict[int, dict[str, Any]] | None = None,
     annotators: tuple[str, ...] = (),
+    data_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     predictions = predictions or {}
     annotator_filter = set(annotators)
@@ -630,6 +643,7 @@ def adjudication_cases(
     grouped: dict[int, dict[str, Any]] = {}
     for row in rows:
         capture_id = int(row["capture_id"])
+        image_path = resolved_or_stored_image_path(row["image_path"], data_dir)
         case = grouped.setdefault(
             capture_id,
             {
@@ -638,7 +652,7 @@ def adjudication_cases(
                 "pose_version": row["pose_version"],
                 "captured_at_utc": row["captured_at_utc"],
                 "image_url": f"/image/{capture_id}",
-                "image_path": row["image_path"],
+                "image_path": image_path,
                 "width": row["width"],
                 "height": row["height"],
                 "annotations": {},
@@ -772,12 +786,26 @@ def parse_optional_float(value: float | str | None) -> float | None:
         return None
 
 
-def image_path_for_capture(conn: sqlite3.Connection, capture_id: int) -> str | None:
+def image_path_for_capture(
+    conn: sqlite3.Connection,
+    capture_id: int,
+    *,
+    data_dir: Path | None = None,
+) -> str | None:
     row = conn.execute(
         "SELECT path FROM image_asset WHERE capture_id = ? ORDER BY id LIMIT 1",
         (capture_id,),
     ).fetchone()
-    return None if row is None else str(row["path"])
+    if row is None:
+        return None
+    return resolved_or_stored_image_path(row["path"], data_dir)
+
+
+def resolved_or_stored_image_path(stored_path: str | None, data_dir: Path | None) -> str:
+    if data_dir is None:
+        return str(stored_path or "")
+    resolved = resolve_image_path(stored_path, data_dir)
+    return str(resolved) if resolved is not None else str(stored_path or "")
 
 
 def first(params: dict[str, list[str]], key: str, default: str) -> str:
