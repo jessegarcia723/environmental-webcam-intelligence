@@ -135,10 +135,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional model predictions CSV. Defaults to task.model_dir/<model-name>/predictions.csv.",
     )
     adjudicate.add_argument(
+        "--checkpoint",
+        help="Optional model checkpoint. Defaults to task.model_dir/<model-name>/model.pt for missing predictions.",
+    )
+    adjudicate.add_argument(
         "--model-name",
         default="efficientnet_b0",
         help="Model subdirectory used to find predictions when --predictions is omitted.",
     )
+    adjudicate.add_argument("--device", default="auto", help="Device for live checkpoint inference of missing predictions.")
     adjudicate.add_argument(
         "--annotator",
         action="append",
@@ -474,9 +479,17 @@ def cmd_adjudicate(args: argparse.Namespace) -> int:
         if args.predictions
         else config.task_model_dir(task_id) / args.model_name / "predictions.csv"
     )
+    checkpoint_path = (
+        Path(args.checkpoint)
+        if args.checkpoint
+        else config.task_model_dir(task_id) / args.model_name / "model.pt"
+    )
     if not predictions_path.exists():
         print(f"Predictions CSV not found, continuing without ML predictions: {predictions_path}")
         predictions_path = None
+    if not checkpoint_path.exists():
+        print(f"Model checkpoint not found, continuing without live inference: {checkpoint_path}")
+        checkpoint_path = None
     serve_adjudication_app(
         config,
         AdjudicationServerOptions(
@@ -485,6 +498,8 @@ def cmd_adjudicate(args: argparse.Namespace) -> int:
             task_id=task_id,
             adjudicator=args.adjudicator,
             predictions_csv=predictions_path,
+            checkpoint_path=checkpoint_path,
+            device=args.device,
             annotators=tuple(args.annotator),
             include_agreements=args.include_agreements,
             open_browser=args.open_browser,

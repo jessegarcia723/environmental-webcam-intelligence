@@ -187,9 +187,10 @@ The adjudication app shows the image, each annotator's label, and the model pred
 
 ```text
 data/models/marine_layer_detection/efficientnet_b0/predictions.csv
+data/models/marine_layer_detection/efficientnet_b0/model.pt
 ```
 
-If model predictions live somewhere else, pass `--predictions /path/to/predictions.csv`. By default, the app reviews disagreements only. Add `--include-agreements` if you want to review every double-labeled frame. Use `--annotator` twice to focus on the two current players and ignore older test annotator names. Final decisions are stored separately from the original annotations, so you keep the audit trail.
+`predictions.csv` covers frames that were already evaluated during training. If a disagreement frame is missing from that CSV, the app uses `model.pt` to run live inference for that frame. If files live somewhere else, pass `--predictions /path/to/predictions.csv` and/or `--checkpoint /path/to/model.pt`. By default, the app reviews disagreements only. Add `--include-agreements` if you want to review every double-labeled frame. Use `--annotator` twice to focus on the two current players and ignore older test annotator names. Final decisions are stored separately from the original annotations, so you keep the audit trail.
 
 Check installed ML packages and Apple Silicon acceleration:
 

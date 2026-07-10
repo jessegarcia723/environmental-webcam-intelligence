@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from enviro_webcam_ml import db
 from enviro_webcam_ml.config import AppConfig
 from enviro_webcam_ml.image_paths import resolve_image_path
+from enviro_webcam_ml.image_prediction import predict_image_paths
 
 
 DEFAULT_LABELS = [
@@ -42,6 +43,8 @@ class AdjudicationServerOptions:
     task_id: str
     adjudicator: str = "adjudicated"
     predictions_csv: Path | None = None
+    checkpoint_path: Path | None = None
+    device: str = "auto"
     annotators: tuple[str, ...] = ()
     include_agreements: bool = False
     open_browser: bool = False
@@ -73,6 +76,12 @@ def serve_adjudication_app(config: AppConfig, options: AdjudicationServerOptions
         db.register_config(conn, config)
 
     predictions = load_model_predictions(options.predictions_csv) if options.predictions_csv else {}
+    inferred = infer_missing_adjudication_predictions(config, options, predictions)
+    predictions.update(inferred)
+    if options.predictions_csv:
+        print(f"loaded adjudication predictions from {options.predictions_csv}: {len(predictions) - len(inferred)}")
+    if options.checkpoint_path:
+        print(f"inferred missing adjudication predictions from {options.checkpoint_path}: {len(inferred)}")
     handler_class = make_adjudication_handler(config, options, predictions)
     server = ThreadingHTTPServer((options.host, options.port), handler_class)
     url = f"http://{options.host}:{server.server_port}/"
@@ -404,6 +413,7 @@ def adjudication_config_payload(config: AppConfig, options: AdjudicationServerOp
         "adjudicator": options.adjudicator,
         "include_agreements": options.include_agreements,
         "predictions_csv": str(options.predictions_csv) if options.predictions_csv else None,
+        "checkpoint_path": str(options.checkpoint_path) if options.checkpoint_path else None,
         "annotators": list(options.annotators),
     }
 
@@ -775,6 +785,39 @@ def load_model_predictions(path: Path | None) -> dict[int, dict[str, Any]]:
                 "correct": row.get("correct", ""),
             }
     return predictions
+
+
+def infer_missing_adjudication_predictions(
+    config: AppConfig,
+    options: AdjudicationServerOptions,
+    existing_predictions: dict[int, dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    if options.checkpoint_path is None:
+        return {}
+    if not options.checkpoint_path.exists():
+        return {}
+
+    with db.connect(config.database_path) as conn:
+        cases = adjudication_cases(
+            conn,
+            task_id=options.task_id,
+            annotators=options.annotators,
+            data_dir=config.data_dir,
+        )
+
+    image_paths: dict[int, str] = {}
+    for case in cases:
+        if case["already_adjudicated"]:
+            continue
+        if not options.include_agreements and case["agreement"]:
+            continue
+        capture_id = int(case["capture_id"])
+        if capture_id in existing_predictions:
+            continue
+        image_path = str(case.get("image_path") or "")
+        if image_path:
+            image_paths[capture_id] = image_path
+    return predict_image_paths(options.checkpoint_path, image_paths, device=options.device)
 
 
 def parse_optional_float(value: float | str | None) -> float | None:
