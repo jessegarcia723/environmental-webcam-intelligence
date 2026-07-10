@@ -1,4 +1,5 @@
 .venv/
+.venv-train/
 __pycache__/
 .pytest_cache/
 *.pyc
@@ -11,4 +12,5 @@ data/raw/
 data/processed/
 data/manifests/*.csv
 data/reports/
+data/training/
 configs/data/

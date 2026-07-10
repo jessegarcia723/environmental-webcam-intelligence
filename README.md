@@ -27,6 +27,7 @@ envirocam build-manifest --config configs/mount_tam.yaml --output data/manifests
 envirocam annotate --config configs/mount_tam.yaml --open-browser
 envirocam analyze-annotations --config configs/mount_tam.yaml
 envirocam check-training-env
+envirocam build-training-set --config configs/mount_tam_training.yaml
 pytest
 ```
 
@@ -169,6 +170,20 @@ envirocam check-training-env
 
 On Apple Silicon, a good result will show `torch` installed and `mps_available: True`. That means PyTorch can use Apple's Metal backend.
 
+Build the first clean image-training CSV:
+
+```bash
+envirocam build-training-set --config configs/mount_tam_training.yaml
+```
+
+By default this includes only captures where at least two annotators agree, skips disagreements, skips legacy labels, and excludes `night_unusable` and `camera_artifact`. It writes:
+
+```text
+data/training/marine_layer_detection_training.csv
+```
+
+The training-set builder also remaps old absolute image paths stored by the collector Mac to the configured `data_dir`, so a database synced from the old Mac can still point at images under the M5's Google Drive path.
+
 ## Current package layout
 
 ```text
@@ -182,6 +197,7 @@ src/enviro_webcam_ml/
   dataset.py          # CSV manifest builder
   db.py               # SQLite schema and repository functions
   quality.py          # basic image quality heuristics
+  training_dataset.py # agreed-label CSV builder for model training
   training_env.py     # ML package and accelerator environment checks
   weather/
     open_meteo.py     # Open-Meteo forecast adapter

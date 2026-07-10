@@ -19,6 +19,7 @@ from enviro_webcam_ml.capture import capture_once
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
+from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
 from enviro_webcam_ml.weather.open_meteo import fetch_forecast
 
@@ -129,6 +130,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_env = sub.add_parser("check-training-env", help="Print installed ML packages and accelerator support.")
     train_env.set_defaults(func=cmd_check_training_env)
+
+    training_set = sub.add_parser(
+        "build-training-set",
+        help="Build a clean training CSV from agreed multi-rater annotations.",
+    )
+    training_set.add_argument("--config", required=True)
+    training_set.add_argument("--task-id", default="marine_layer_detection")
+    training_set.add_argument("--output", default="data/training/marine_layer_detection_training.csv")
+    training_set.add_argument(
+        "--include-label",
+        action="append",
+        default=[],
+        help="Label to include. Can be passed multiple times. Defaults to all configured labels.",
+    )
+    training_set.add_argument(
+        "--exclude-label",
+        action="append",
+        default=["night_unusable", "camera_artifact"],
+        help="Label to exclude. Can be passed multiple times.",
+    )
+    training_set.add_argument("--min-annotators", type=int, default=2)
+    training_set.add_argument("--train-fraction", type=float, default=0.70)
+    training_set.add_argument("--val-fraction", type=float, default=0.15)
+    training_set.add_argument("--test-fraction", type=float, default=0.15)
+    training_set.add_argument(
+        "--allow-missing-images",
+        action="store_true",
+        help="Include rows even when the remapped image path does not exist.",
+    )
+    training_set.set_defaults(func=cmd_build_training_set)
 
     return parser
 
@@ -360,6 +391,32 @@ def cmd_check_training_env(args: argparse.Namespace) -> int:
     print(f"  mps_available: {torch['mps_available']}")
     print(f"  cuda_available: {torch['cuda_available']}")
     print(f"  recommended_device: {torch['recommended_device'] or 'n/a'}")
+    return 0
+
+
+def cmd_build_training_set(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    with db.connect(config.database_path) as conn:
+        summary = build_training_set(
+            conn,
+            config=config,
+            options=TrainingSetOptions(
+                task_id=args.task_id,
+                output_path=Path(args.output),
+                include_labels=tuple(args.include_label),
+                exclude_labels=tuple(args.exclude_label),
+                min_annotators=args.min_annotators,
+                train_fraction=args.train_fraction,
+                val_fraction=args.val_fraction,
+                test_fraction=args.test_fraction,
+                allow_missing_images=args.allow_missing_images,
+            ),
+        )
+    print(f"Wrote training set to {Path(summary['output_path']).resolve()}")
+    print(f"Rows: {summary['row_count']}")
+    print(f"Labels: {summary['label_counts']}")
+    print(f"Splits: {summary['split_counts']}")
+    print(f"Skipped: {summary['skipped']}")
     return 0
 
 
