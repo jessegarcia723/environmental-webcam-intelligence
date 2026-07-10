@@ -235,6 +235,33 @@ data/models/marine_layer_detection/comparison.md
 
 My current hunch: with a small dataset, a pretrained `efficientnet_b0` or `mobilenet_v3_small` will likely beat a non-pretrained `resnet18`. But we should trust the held-out test metrics, not the hunch.
 
+Generate Grad-CAM visual explanations for a trained image model:
+
+```bash
+envirocam explain-image-model \
+  --config configs/mount_tam_training.yaml \
+  --model-name efficientnet_b0 \
+  --split test \
+  --selection mixed \
+  --max-images 30 \
+  --device mps
+```
+
+This writes side-by-side original/heatmap panels plus an HTML gallery:
+
+```text
+data/models/marine_layer_detection/efficientnet_b0/explanations/index.html
+data/models/marine_layer_detection/efficientnet_b0/explanations/summary.json
+```
+
+Open the gallery with:
+
+```bash
+open data/models/marine_layer_detection/efficientnet_b0/explanations/index.html
+```
+
+Useful selection modes are `mixed`, `incorrect`, `low-confidence`, `high-confidence`, and `correct`. `mixed` is the best first look: it shows mistakes first, then lower-confidence correct predictions if there are no mistakes. The heatmap highlights image regions that most influenced the selected class; it is a sanity check, not a causal proof.
+
 ## Generalizing to a new geophysical scenario
 
 Scenario-specific values belong in YAML config, not framework code. A new site/task should define:
@@ -283,6 +310,7 @@ src/enviro_webcam_ml/
   db.py               # SQLite schema and repository functions
   quality.py          # basic image quality heuristics
   image_training.py   # PyTorch image classifier training
+  image_explanations.py # Grad-CAM visual model explanations
   model_comparison.py # compare trained image-model runs
   training_dataset.py # agreed-label CSV builder for model training
   training_env.py     # ML package and accelerator environment checks
@@ -292,4 +320,4 @@ src/enviro_webcam_ml/
 
 ## What this MVP does not do yet
 
-It does not yet include image explanations, weather-feature models, deployment serving, or forecast-horizon models. The current training command is an image-only baseline.
+It does not yet include weather-feature models, deployment serving, or forecast-horizon models. The current training command is an image-only baseline.

@@ -19,6 +19,7 @@ from enviro_webcam_ml.capture import capture_once
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
+from enviro_webcam_ml.image_explanations import ImageExplanationOptions, explain_image_model
 from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_model
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
@@ -192,6 +193,43 @@ def build_parser() -> argparse.ArgumentParser:
     compare_models.add_argument("--output-csv", help="Defaults to <models-dir>/comparison.csv.")
     compare_models.add_argument("--output-md", help="Defaults to <models-dir>/comparison.md.")
     compare_models.set_defaults(func=cmd_compare_image_models)
+
+    explain_model = sub.add_parser(
+        "explain-image-model",
+        help="Generate Grad-CAM visual explanations for a trained image model.",
+    )
+    explain_model.add_argument("--config", help="Optional config used to derive task-specific model paths.")
+    explain_model.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    explain_model.add_argument(
+        "--model-name",
+        default="resnet18",
+        help="Model subdirectory to use with --config when --checkpoint is not provided.",
+    )
+    explain_model.add_argument("--checkpoint", help="Defaults to task.model_dir/<model-name>/model.pt with --config.")
+    explain_model.add_argument(
+        "--predictions",
+        help="Defaults to <checkpoint-dir>/predictions.csv.",
+    )
+    explain_model.add_argument(
+        "--output-dir",
+        help="Defaults to <checkpoint-dir>/explanations.",
+    )
+    explain_model.add_argument("--split", default="test", help="Prediction split to explain, or 'all'.")
+    explain_model.add_argument(
+        "--selection",
+        default="mixed",
+        help="One of: mixed, incorrect, correct, high-confidence, low-confidence.",
+    )
+    explain_model.add_argument("--max-images", type=int, default=24)
+    explain_model.add_argument(
+        "--target",
+        default="predicted",
+        help="Class to explain: predicted or true.",
+    )
+    explain_model.add_argument("--device", default="auto")
+    explain_model.add_argument("--output-width", type=int, default=960)
+    explain_model.add_argument("--alpha", type=float, default=0.45, help="Heatmap overlay opacity from 0 to 1.")
+    explain_model.set_defaults(func=cmd_explain_image_model)
 
     return parser
 
@@ -543,6 +581,45 @@ def cmd_compare_image_models(args: argparse.Namespace) -> int:
         )
     else:
         print("No model metadata files found.")
+    return 0
+
+
+def cmd_explain_image_model(args: argparse.Namespace) -> int:
+    config = load_config(args.config) if args.config else None
+    task_id = None
+    if config is not None:
+        task_id = config.default_task_id if args.task_id is None else args.task_id
+
+    checkpoint_path = (
+        Path(args.checkpoint)
+        if args.checkpoint
+        else config.task_model_dir(task_id) / args.model_name / "model.pt" if config is not None
+        else Path("data/models") / args.model_name / "model.pt"
+    )
+    checkpoint_dir = checkpoint_path.parent
+    predictions_path = Path(args.predictions) if args.predictions else checkpoint_dir / "predictions.csv"
+    output_dir = Path(args.output_dir) if args.output_dir else checkpoint_dir / "explanations"
+
+    summary = explain_image_model(
+        ImageExplanationOptions(
+            checkpoint_path=checkpoint_path,
+            predictions_path=predictions_path,
+            output_dir=output_dir,
+            split=args.split,
+            selection=args.selection,
+            max_images=args.max_images,
+            target=args.target,
+            device=args.device,
+            output_width=args.output_width,
+            alpha=args.alpha,
+        )
+    )
+    print(f"Wrote {summary['count']} Grad-CAM explanation image(s) to {Path(summary['output_dir']).resolve()}")
+    print(f"Wrote gallery to {Path(summary['index_path']).resolve()}")
+    print(f"Wrote summary to {Path(summary['summary_path']).resolve()}")
+    print(f"Device: {summary['device']}")
+    print(f"Model: {summary['model_name']}")
+    print(f"Selection: split={summary['split']} selection={summary['selection']} target={summary['target']}")
     return 0
 
 
