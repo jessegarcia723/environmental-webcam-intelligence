@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from enviro_webcam_ml.image_preprocessing import PixelCrop, parse_pixel_crop
+
 
 @dataclass(frozen=True)
 class LocationConfig:
@@ -137,6 +139,11 @@ class AppConfig:
         if camera_group:
             return tuple(str(camera_id) for camera_id in camera_group)
         return tuple(camera.id for camera in self.cameras)
+
+    def task_image_crop_pixels(self, task_id: str | None = None) -> PixelCrop | None:
+        task = self.task(task_id)
+        preprocessing = task.get("image_preprocessing") or {}
+        return parse_pixel_crop(preprocessing.get("crop_pixels"))
 
 
 def resolve_relative(base: Path, path: Path) -> Path:

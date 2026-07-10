@@ -203,6 +203,17 @@ data/models/marine_layer_detection/resnet18/metadata.json
 data/models/marine_layer_detection/resnet18/predictions.csv
 ```
 
+For Mount Tam, the task config crops camera branding and timestamp text before training/evaluation:
+
+```yaml
+image_preprocessing:
+  crop_pixels:
+    top: 160
+    bottom: 31
+```
+
+Raw images are not modified. The crop is applied in memory when model inputs are loaded, and the saved checkpoint records the crop so Grad-CAM explanations use the same view the model saw.
+
 Supported model names:
 
 - `resnet18`
@@ -280,6 +291,10 @@ tasks:
     output_slug: example_detection
     training_csv: ../data/training/example_detection_training.csv
     model_dir: ../data/models/example_detection
+    image_preprocessing:
+      crop_pixels:
+        top: 0
+        bottom: 0
     labels:
       - positive
       - negative
@@ -309,6 +324,7 @@ src/enviro_webcam_ml/
   dataset.py          # CSV manifest builder
   db.py               # SQLite schema and repository functions
   quality.py          # basic image quality heuristics
+  image_preprocessing.py # shared crop/preprocessing helpers
   image_training.py   # PyTorch image classifier training
   image_explanations.py # Grad-CAM visual model explanations
   model_comparison.py # compare trained image-model runs

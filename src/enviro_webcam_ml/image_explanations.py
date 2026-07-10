@@ -10,6 +10,7 @@ from typing import Any
 
 from PIL import Image
 
+from enviro_webcam_ml.image_preprocessing import crop_image, crop_to_dict
 from enviro_webcam_ml.image_training import (
     build_model,
     build_transforms,
@@ -51,6 +52,7 @@ def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
     labels = labels_from_mapping(label_to_idx)
     model_name = checkpoint.get("model_name", "resnet18")
     image_size = int(checkpoint.get("image_size", 224))
+    crop_pixels = checkpoint.get("crop_pixels")
 
     device = choose_device(torch, options.device)
     model = build_model(models, nn, model_name, len(labels), pretrained=False)
@@ -58,7 +60,11 @@ def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
     model.to(device)
     model.eval()
 
-    _train_transform, eval_transform = build_transforms(transforms, image_size)
+    _train_transform, eval_transform = build_transforms(
+        transforms,
+        image_size,
+        crop_pixels=crop_pixels,
+    )
     target_layer = grad_cam_target_layer(model, model_name)
 
     prediction_rows = read_prediction_rows(options.predictions_path)
@@ -83,10 +89,11 @@ def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
             with Image.open(image_path) as original:
                 original = original.convert("RGB")
                 image_tensor = eval_transform(original)
+                display_image = crop_image(original, crop_pixels)
                 requested_target_idx = target_index_for_row(row, label_to_idx, options.target)
                 cam, model_output = runner(image_tensor, requested_target_idx)
                 output_image = render_gradcam_panel(
-                    original,
+                    display_image,
                     cam,
                     matplotlib,
                     np,
@@ -119,7 +126,7 @@ def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
 
     index_path = options.output_dir / "index.html"
     summary_path = options.output_dir / "summary.json"
-    write_explanation_index(index_path, generated, options, model_name, labels)
+    write_explanation_index(index_path, generated, options, model_name, labels, crop_to_dict(crop_pixels))
     summary = {
         "checkpoint_path": str(options.checkpoint_path),
         "predictions_path": str(options.predictions_path),
@@ -128,6 +135,7 @@ def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
         "summary_path": str(summary_path),
         "model_name": model_name,
         "device": str(device),
+        "crop_pixels": crop_to_dict(crop_pixels),
         "labels": labels,
         "split": options.split,
         "selection": options.selection,
@@ -284,6 +292,7 @@ def write_explanation_index(
     options: ImageExplanationOptions,
     model_name: str,
     labels: list[str],
+    crop_pixels: dict[str, int] | None,
 ) -> None:
     cards = []
     for item in explanations:
@@ -341,6 +350,7 @@ def write_explanation_index(
       split=<code>{html.escape(options.split)}</code>,
       selection=<code>{html.escape(options.selection)}</code>,
       target=<code>{html.escape(options.target)}</code>,
+      crop_pixels=<code>{html.escape(str(crop_pixels or {}))}</code>,
       labels=<code>{html.escape(', '.join(labels))}</code>
     </p>
   </header>

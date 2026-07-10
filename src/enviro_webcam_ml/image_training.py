@@ -9,6 +9,8 @@ from typing import Any
 
 from PIL import Image
 
+from enviro_webcam_ml.image_preprocessing import PixelCrop, crop_image, crop_to_dict
+
 
 @dataclass(frozen=True)
 class ImageTrainingOptions:
@@ -23,6 +25,7 @@ class ImageTrainingOptions:
     pretrained: bool = False
     device: str = "auto"
     seed: int = 42
+    crop_pixels: PixelCrop | dict[str, int] | None = None
 
 
 def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
@@ -43,7 +46,11 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
 
     torch.manual_seed(options.seed)
     device = choose_device(torch, options.device)
-    transform_train, transform_eval = build_transforms(transforms, options.image_size)
+    transform_train, transform_eval = build_transforms(
+        transforms,
+        options.image_size,
+        crop_pixels=options.crop_pixels,
+    )
 
     train_dataset = CsvImageDataset(rows, label_to_idx, split="train", transform=transform_train)
     val_dataset = CsvImageDataset(rows, label_to_idx, split="val", transform=transform_eval)
@@ -146,6 +153,7 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
             "label_to_idx": label_to_idx,
             "image_size": options.image_size,
             "pretrained": options.pretrained,
+            "crop_pixels": crop_to_dict(options.crop_pixels),
         },
         checkpoint_path,
     )
@@ -162,6 +170,8 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         "epochs": options.epochs,
         "batch_size": options.batch_size,
         "learning_rate": options.learning_rate,
+        "image_size": options.image_size,
+        "crop_pixels": crop_to_dict(options.crop_pixels),
         "labels": labels,
         "label_to_idx": label_to_idx,
         "split_counts": dict(sorted(split_counts.items())),
@@ -235,13 +245,17 @@ def build_model(models, nn, model_name: str, num_classes: int, pretrained: bool)
     raise ValueError(f"Unsupported model_name={model_name!r}; currently supported: {supported}")
 
 
-def build_transforms(transforms, image_size: int):
+def build_transforms(transforms, image_size: int, *, crop_pixels: PixelCrop | dict[str, int] | None = None):
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
     )
+    crop_steps = []
+    if crop_to_dict(crop_pixels):
+        crop_steps = [transforms.Lambda(lambda image: crop_image(image, crop_pixels))]
     train_transform = transforms.Compose(
-        [
+        crop_steps
+        + [
             transforms.Resize((image_size, image_size)),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.ToTensor(),
@@ -249,7 +263,8 @@ def build_transforms(transforms, image_size: int):
         ]
     )
     eval_transform = transforms.Compose(
-        [
+        crop_steps
+        + [
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
             normalize,

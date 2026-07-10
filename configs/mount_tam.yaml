@@ -79,6 +79,10 @@ tasks:
     output_slug: marine_layer_detection
     training_csv: ../data/training/marine_layer_detection_training.csv
     model_dir: ../data/models/marine_layer_detection
+    image_preprocessing:
+      crop_pixels:
+        top: 160
+        bottom: 31
     labels:
       - clouds_below_peak
       - no_clouds_below_peak

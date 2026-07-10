@@ -516,6 +516,7 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
         else config.task_model_dir(task_id) / args.model_name if config is not None
         else Path("data/models") / args.model_name
     )
+    crop_pixels = config.task_image_crop_pixels(task_id) if config is not None else None
     summary = train_image_model(
         ImageTrainingOptions(
             training_csv=training_csv,
@@ -528,6 +529,7 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
             model_name=args.model_name,
             pretrained=args.pretrained,
             device=args.device,
+            crop_pixels=crop_pixels,
         )
     )
     print(f"Wrote checkpoint to {summary['checkpoint_path']}")
@@ -535,6 +537,7 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
     print(f"Wrote predictions to {summary['predictions_path']}")
     print(f"Device: {summary['device']}")
     print(f"Model: {summary['model_name']}")
+    print(f"Crop pixels: {summary['crop_pixels']}")
     print(f"Labels: {summary['labels']}")
     print(f"Splits: {summary['split_counts']}")
     final = summary["history"][-1] if summary["history"] else None
