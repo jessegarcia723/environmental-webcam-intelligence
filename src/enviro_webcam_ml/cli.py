@@ -13,7 +13,12 @@ from enviro_webcam_ml.annotation_analysis import (
     write_analysis_markdown,
     write_disagreements_csv,
 )
-from enviro_webcam_ml.annotation import AnnotationServerOptions, serve_annotation_app
+from enviro_webcam_ml.annotation import (
+    AdjudicationServerOptions,
+    AnnotationServerOptions,
+    serve_adjudication_app,
+    serve_annotation_app,
+)
 from enviro_webcam_ml.backup import backup_sqlite_database
 from enviro_webcam_ml.capture import capture_once
 from enviro_webcam_ml.clock import ClockSanityChecker
@@ -115,6 +120,38 @@ def build_parser() -> argparse.ArgumentParser:
     annotate.add_argument("--right-annotator", default="right")
     annotate.add_argument("--open-browser", action="store_true")
     annotate.set_defaults(func=cmd_annotate)
+
+    adjudicate = sub.add_parser(
+        "adjudicate",
+        help="Run a shared adjudication app for double-labeled disagreements.",
+    )
+    adjudicate.add_argument("--config", required=True)
+    adjudicate.add_argument("--host", default="127.0.0.1")
+    adjudicate.add_argument("--port", type=int, default=8001)
+    adjudicate.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    adjudicate.add_argument("--adjudicator", default="joint")
+    adjudicate.add_argument(
+        "--predictions",
+        help="Optional model predictions CSV. Defaults to task.model_dir/<model-name>/predictions.csv.",
+    )
+    adjudicate.add_argument(
+        "--model-name",
+        default="efficientnet_b0",
+        help="Model subdirectory used to find predictions when --predictions is omitted.",
+    )
+    adjudicate.add_argument(
+        "--annotator",
+        action="append",
+        default=[],
+        help="Only adjudicate labels from this annotator. Pass twice for the two-player workflow.",
+    )
+    adjudicate.add_argument(
+        "--include-agreements",
+        action="store_true",
+        help="Adjudicate all double-labeled frames instead of disagreements only.",
+    )
+    adjudicate.add_argument("--open-browser", action="store_true")
+    adjudicate.set_defaults(func=cmd_adjudicate)
 
     analysis = sub.add_parser(
         "analyze-annotations",
@@ -428,8 +465,37 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_adjudicate(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    predictions_path = (
+        Path(args.predictions)
+        if args.predictions
+        else config.task_model_dir(task_id) / args.model_name / "predictions.csv"
+    )
+    if not predictions_path.exists():
+        print(f"Predictions CSV not found, continuing without ML predictions: {predictions_path}")
+        predictions_path = None
+    serve_adjudication_app(
+        config,
+        AdjudicationServerOptions(
+            host=args.host,
+            port=args.port,
+            task_id=task_id,
+            adjudicator=args.adjudicator,
+            predictions_csv=predictions_path,
+            annotators=tuple(args.annotator),
+            include_agreements=args.include_agreements,
+            open_browser=args.open_browser,
+        ),
+    )
+    return 0
+
+
 def cmd_analyze_annotations(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    db.init_db(config.database_path)
     task_id = config.default_task_id if args.task_id is None else args.task_id
     with db.connect(config.database_path) as conn:
         analysis = analyze_annotations(conn, config=config, task_id=task_id)
@@ -446,7 +512,9 @@ def cmd_analyze_annotations(args: argparse.Namespace) -> int:
         f"annotations={analysis['annotation_count']} "
         f"unique_captures={analysis['unique_capture_count']} "
         f"double_labeled={analysis['double_labeled_capture_count']} "
-        f"disagreements={len(analysis['disagreements'])}"
+        f"disagreements={len(analysis['disagreements'])} "
+        f"adjudicated={analysis['adjudication_count']} "
+        f"remaining_disagreements={analysis['remaining_disagreement_count']}"
     )
     if analysis["legacy_labels"]:
         print(f"Legacy labels found: {analysis['legacy_labels']}")
@@ -480,6 +548,7 @@ def cmd_check_training_env(args: argparse.Namespace) -> int:
 
 def cmd_build_training_set(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    db.init_db(config.database_path)
     task_id = config.default_task_id if args.task_id is None else args.task_id
     output_path = Path(args.output) if args.output else config.task_training_csv_path(task_id)
     exclude_labels = (

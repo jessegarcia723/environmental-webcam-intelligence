@@ -4,6 +4,7 @@ from PIL import Image
 
 from enviro_webcam_ml import db
 from enviro_webcam_ml.annotation import save_annotation
+from enviro_webcam_ml.annotation import save_adjudication
 from enviro_webcam_ml.config import load_config
 from enviro_webcam_ml.training_dataset import (
     TrainingSetOptions,
@@ -77,6 +78,44 @@ def test_build_training_set_uses_only_agreed_current_non_excluded_labels(tmp_pat
     }
     assert "clouds_below_peak" in csv_text
     assert "night_unusable" not in csv_text
+
+
+def test_build_training_set_uses_adjudicated_disagreement_label(tmp_path: Path) -> None:
+    config = load_config(Path("configs/mount_tam.yaml"))
+    db_path = tmp_path / "adjudicated_training.sqlite3"
+    output = tmp_path / "training.csv"
+    image_path = tmp_path / "data" / "raw" / "mount_tam_east_peak" / "frame.jpg"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), color=(100, 120, 140)).save(image_path)
+
+    db.init_db(db_path)
+    with db.connect(db_path) as conn:
+        db.register_config(conn, config)
+        capture_id = insert_capture_with_image(conn, image_path, "2026-07-08T12:00:00+00:00", "a")
+        add_two_labels(conn, capture_id, "clouds_below_peak", "no_clouds_below_peak")
+        save_adjudication(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            final_label="clouds_below_peak",
+            adjudicator="joint",
+        )
+
+        summary = build_training_set(
+            conn,
+            config=config,
+            options=TrainingSetOptions(
+                task_id="marine_layer_detection",
+                output_path=output,
+                exclude_labels=config.task_excluded_training_labels("marine_layer_detection"),
+            ),
+        )
+
+    csv_text = output.read_text(encoding="utf-8")
+    assert summary["row_count"] == 1
+    assert summary["skipped"] == {}
+    assert "clouds_below_peak" in csv_text
+    assert "adjudicated" in csv_text
 
 
 def test_stratified_splits_keep_minority_label_in_each_available_split() -> None:

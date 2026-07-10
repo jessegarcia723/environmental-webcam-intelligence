@@ -49,6 +49,7 @@ def analyze_annotations(
 
     pair_agreements = compute_pair_agreements(by_capture, labels)
     disagreements = disagreement_rows(by_capture)
+    adjudications = adjudication_rows(conn, task_id=task_id)
 
     double_labeled_count = sum(
         1
@@ -71,6 +72,11 @@ def analyze_annotations(
         "legacy_labels": dict(sorted(legacy_labels.items())),
         "pair_agreements": pair_agreements,
         "disagreements": disagreements,
+        "adjudication_count": len(adjudications),
+        "adjudication_label_counts": dict(sorted(Counter(row["final_label"] for row in adjudications).items())),
+        "remaining_disagreement_count": sum(
+            1 for row in disagreements if row["capture_id"] not in {item["capture_id"] for item in adjudications}
+        ),
     }
 
 
@@ -196,6 +202,27 @@ def disagreement_rows(by_capture: dict[int, list[dict[str, Any]]]) -> list[dict[
     return result
 
 
+def adjudication_rows(conn: sqlite3.Connection, *, task_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+          capture_id,
+          task_id,
+          final_label,
+          COALESCE(adjudicator, '') AS adjudicator,
+          notes,
+          model_label,
+          model_confidence,
+          created_at_utc AS adjudicated_at_utc
+        FROM annotation_adjudication
+        WHERE task_id = ?
+        ORDER BY created_at_utc, capture_id
+        """,
+        (task_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def write_analysis_markdown(analysis: dict[str, Any], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -249,6 +276,16 @@ def write_analysis_markdown(analysis: dict[str, Any], output_path: Path) -> None
             )
     else:
         lines.append("- Need at least two annotators for agreement statistics.")
+
+    lines.extend(["", "## Adjudication", ""])
+    lines.append(f"- Final labels saved: {analysis.get('adjudication_count', 0)}")
+    lines.append(f"- Remaining disagreements: {analysis.get('remaining_disagreement_count', len(analysis['disagreements']))}")
+    final_counts = analysis.get("adjudication_label_counts", {})
+    if final_counts:
+        lines.append("")
+        lines.extend(f"- `{label}`: {count}" for label, count in final_counts.items())
+    else:
+        lines.append("- No adjudicated final labels yet.")
 
     lines.extend(["", "## Legacy labels not in current config", ""])
     if analysis["legacy_labels"]:

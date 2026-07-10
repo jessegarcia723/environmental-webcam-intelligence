@@ -163,6 +163,34 @@ Verify the synced database/config can be read:
 envirocam analyze-annotations --config configs/mount_tam_training.yaml
 ```
 
+After both annotators finish a batch, this writes:
+
+```text
+data/reports/annotation_analysis.md
+data/reports/disagreements.csv
+```
+
+The report includes total labels, pairwise agreement, disagreement count, adjudicated final labels, and remaining disagreements.
+
+To review disagreements together and choose a final label, run:
+
+```bash
+envirocam adjudicate \
+  --config configs/mount_tam_training.yaml \
+  --model-name efficientnet_b0 \
+  --annotator Jesse \
+  --annotator Lauren \
+  --open-browser
+```
+
+The adjudication app shows the image, each annotator's label, and the model prediction from:
+
+```text
+data/models/marine_layer_detection/efficientnet_b0/predictions.csv
+```
+
+If model predictions live somewhere else, pass `--predictions /path/to/predictions.csv`. By default, the app reviews disagreements only. Add `--include-agreements` if you want to review every double-labeled frame. Use `--annotator` twice to focus on the two current players and ignore older test annotator names. Final decisions are stored separately from the original annotations, so you keep the audit trail.
+
 Check installed ML packages and Apple Silicon acceleration:
 
 ```bash
@@ -177,7 +205,7 @@ Build the first clean image-training CSV:
 envirocam build-training-set --config configs/mount_tam_training.yaml
 ```
 
-By default this includes only captures where at least two annotators agree, skips disagreements, skips legacy labels, and excludes `night_unusable` and `camera_artifact`. It writes:
+By default this includes captures where at least two annotators agree, plus adjudicated disagreement frames. It skips unresolved disagreements, skips legacy labels, and excludes `night_unusable` and `camera_artifact`. It writes:
 
 ```text
 data/training/marine_layer_detection_training.csv

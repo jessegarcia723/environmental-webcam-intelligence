@@ -40,6 +40,7 @@ def build_training_set(
     )
     rows = candidate_rows(conn, task_id=options.task_id)
     grouped = group_latest_annotations(rows)
+    adjudications = adjudication_labels(conn, task_id=options.task_id)
     configured_labels = set(task_labels(config, options.task_id))
     include_labels = set(options.include_labels) if options.include_labels else configured_labels
     exclude_labels = set(options.exclude_labels)
@@ -50,15 +51,21 @@ def build_training_set(
         annotators = sorted(annotations)
         labels = {annotations[annotator]["label"] for annotator in annotators}
         first = annotations[annotators[0]]
+        adjudicated_label = adjudications.get(capture_id)
 
         if len(annotators) < options.min_annotators:
             skipped["too_few_annotators"] += 1
             continue
-        if len(labels) != 1:
+        if adjudicated_label is not None:
+            label = adjudicated_label
+            label_source = "adjudicated"
+        elif len(labels) == 1:
+            label = next(iter(labels))
+            label_source = "agreement"
+        else:
             skipped["disagreement"] += 1
             continue
 
-        label = next(iter(labels))
         if label not in configured_labels:
             skipped["legacy_or_unknown_label"] += 1
             continue
@@ -81,6 +88,7 @@ def build_training_set(
                 "camera_id": first.get("camera_id") or "",
                 "captured_at_utc": first.get("captured_at_utc") or "",
                 "label": label,
+                "label_source": label_source,
                 "split": "",
                 "image_path": str(image_path) if image_path else "",
                 "image_exists": int(image_exists),
@@ -156,6 +164,18 @@ def group_latest_annotations(rows: list[dict[str, Any]]) -> dict[int, dict[str, 
         if existing is None or (row.get("annotated_at_utc") or "") >= (existing.get("annotated_at_utc") or ""):
             grouped[capture_id][annotator] = row
     return grouped
+
+
+def adjudication_labels(conn: sqlite3.Connection, *, task_id: str) -> dict[int, str]:
+    rows = conn.execute(
+        """
+        SELECT capture_id, final_label
+        FROM annotation_adjudication
+        WHERE task_id = ?
+        """,
+        (task_id,),
+    ).fetchall()
+    return {int(row["capture_id"]): str(row["final_label"]) for row in rows}
 
 
 def resolve_image_path(stored_path: str | None, data_dir: Path) -> Path | None:
@@ -248,6 +268,7 @@ def write_training_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
         "captured_at_utc",
         "split",
         "label",
+        "label_source",
         "image_path",
         "image_exists",
         "original_image_path",

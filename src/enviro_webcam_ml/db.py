@@ -109,6 +109,20 @@ CREATE TABLE IF NOT EXISTS annotation (
   created_at_utc TEXT NOT NULL,
   FOREIGN KEY (capture_id) REFERENCES capture(id)
 );
+
+CREATE TABLE IF NOT EXISTS annotation_adjudication (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  capture_id INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  final_label TEXT NOT NULL,
+  adjudicator TEXT,
+  notes TEXT,
+  model_label TEXT,
+  model_confidence REAL,
+  created_at_utc TEXT NOT NULL,
+  UNIQUE(capture_id, task_id),
+  FOREIGN KEY (capture_id) REFERENCES capture(id)
+);
 """
 
 

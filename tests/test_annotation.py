@@ -4,10 +4,14 @@ from PIL import Image
 
 from enviro_webcam_ml import db
 from enviro_webcam_ml.annotation import (
+    adjudication_report,
     annotation_stats,
     delete_annotation,
+    load_model_predictions,
     next_unannotated_frame,
+    next_adjudication_case,
     save_annotation,
+    save_adjudication,
     task_labels,
 )
 from enviro_webcam_ml.config import load_config
@@ -192,3 +196,100 @@ def test_delete_annotation_removes_only_matching_annotator(tmp_path: Path) -> No
     assert [dict(row) for row in rows] == [
         {"annotator": "partner", "label": "no_clouds_below_peak"}
     ]
+
+
+def test_adjudication_case_report_and_prediction_lookup(tmp_path: Path) -> None:
+    db_path = tmp_path / "adjudication.sqlite3"
+    image_path = tmp_path / "frame.jpg"
+    Image.new("RGB", (8, 8), color=(120, 130, 140)).save(image_path)
+    predictions_csv = tmp_path / "predictions.csv"
+    predictions_csv.write_text(
+        "split,capture_id,camera_id,captured_at_utc,true_label,pred_label,confidence,correct,image_path\n"
+        f"test,1,camera,2026-07-08T12:00:00+00:00,clouds_below_peak,no_clouds_below_peak,0.81,0,{image_path}\n",
+        encoding="utf-8",
+    )
+
+    db.init_db(db_path)
+    predictions = load_model_predictions(predictions_csv)
+    with db.connect(db_path) as conn:
+        capture_id = db.insert_capture(
+            conn,
+            camera_id="camera",
+            pose_version="initial",
+            captured_at_utc="2026-07-08T12:00:00+00:00",
+            requested_url="https://example.test/1.jpg",
+            http_status=200,
+            content_type="image/jpeg",
+            byte_count=100,
+            sha256="abc",
+            error=None,
+        )
+        db.insert_image_asset(
+            conn,
+            capture_id=capture_id,
+            path=image_path,
+            sha256="abc",
+            width=8,
+            height=8,
+        )
+        save_annotation(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            label="clouds_below_peak",
+            annotator="jesse",
+        )
+        save_annotation(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            label="no_clouds_below_peak",
+            annotator="partner",
+        )
+        save_annotation(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            label="peak_obscured_uncertain",
+            annotator="old_test",
+        )
+
+        case = next_adjudication_case(
+            conn,
+            task_id="marine_layer_detection",
+            predictions=predictions,
+            annotators=("jesse", "partner"),
+        )
+        assert case is not None
+        assert case["agreement"] is False
+        assert case["model_prediction"]["pred_label"] == "no_clouds_below_peak"
+
+        save_adjudication(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            final_label="clouds_below_peak",
+            adjudicator="joint",
+            model_label=case["model_prediction"]["pred_label"],
+            model_confidence=case["model_prediction"]["confidence"],
+        )
+        report = adjudication_report(conn, task_id="marine_layer_detection")
+        filtered_report = adjudication_report(
+            conn,
+            task_id="marine_layer_detection",
+            annotators=("jesse", "partner"),
+        )
+        next_case = next_adjudication_case(
+            conn,
+            task_id="marine_layer_detection",
+            predictions=predictions,
+            annotators=("jesse", "partner"),
+        )
+
+    assert report["double_labeled"] == 1
+    assert report["disagreements"] == 1
+    assert filtered_report["disagreements"] == 1
+    assert report["adjudicated"] == 1
+    assert report["remaining_disagreements"] == 0
+    assert report["final_label_counts"] == {"clouds_below_peak": 1}
+    assert next_case is None

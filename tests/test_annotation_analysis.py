@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from enviro_webcam_ml import db
-from enviro_webcam_ml.annotation import save_annotation
+from enviro_webcam_ml.annotation import save_adjudication, save_annotation
 from enviro_webcam_ml.annotation_analysis import (
     analyze_annotations,
     write_analysis_markdown,
@@ -63,6 +63,13 @@ def test_analyze_annotations_counts_agreement_disagreement_and_legacy_label(tmp_
             label="uncertain",
             annotator="partner",
         )
+        save_adjudication(
+            conn,
+            capture_id=second_capture,
+            task_id="marine_layer_detection",
+            final_label="clouds_below_peak",
+            adjudicator="joint",
+        )
 
         analysis = analyze_annotations(
             conn,
@@ -75,6 +82,9 @@ def test_analyze_annotations_counts_agreement_disagreement_and_legacy_label(tmp_
     assert analysis["double_labeled_capture_count"] == 3
     assert analysis["legacy_labels"] == {"peak_obscured_uncertain": 1, "uncertain": 1}
     assert len(analysis["disagreements"]) == 2
+    assert analysis["adjudication_count"] == 1
+    assert analysis["remaining_disagreement_count"] == 1
+    assert analysis["adjudication_label_counts"] == {"clouds_below_peak": 1}
     assert analysis["disagreements"][0]["capture_id"] == second_capture
     assert len(analysis["pair_agreements"]) == 1
     assert analysis["pair_agreements"][0].overlap_count == 3
