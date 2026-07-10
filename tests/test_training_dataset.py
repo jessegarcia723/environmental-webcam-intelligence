@@ -7,8 +7,10 @@ from enviro_webcam_ml.annotation import save_annotation
 from enviro_webcam_ml.config import load_config
 from enviro_webcam_ml.training_dataset import (
     TrainingSetOptions,
+    assign_stratified_chronological_splits,
     build_training_set,
     resolve_image_path,
+    split_label_counts,
 )
 
 
@@ -75,6 +77,40 @@ def test_build_training_set_uses_only_agreed_current_non_excluded_labels(tmp_pat
     }
     assert "clouds_below_peak" in csv_text
     assert "night_unusable" not in csv_text
+
+
+def test_stratified_splits_keep_minority_label_in_each_available_split() -> None:
+    rows = []
+    for index in range(9):
+        rows.append(
+            {
+                "capture_id": index,
+                "camera_id": "camera_a",
+                "captured_at_utc": f"2026-07-08T00:{index:02d}:00+00:00",
+                "label": "clouds_below_peak",
+            }
+        )
+    for index in range(90):
+        rows.append(
+            {
+                "capture_id": 100 + index,
+                "camera_id": "camera_a",
+                "captured_at_utc": f"2026-07-09T00:{index:02d}:00+00:00",
+                "label": "no_clouds_below_peak",
+            }
+        )
+
+    assign_stratified_chronological_splits(
+        rows,
+        train_fraction=0.70,
+        val_fraction=0.15,
+        test_fraction=0.15,
+    )
+
+    counts = split_label_counts(rows)
+    assert counts["train"]["clouds_below_peak"] == 6
+    assert counts["val"]["clouds_below_peak"] == 1
+    assert counts["test"]["clouds_below_peak"] == 2
 
 
 def insert_capture_with_image(

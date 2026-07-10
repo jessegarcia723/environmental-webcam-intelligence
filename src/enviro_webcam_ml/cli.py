@@ -222,6 +222,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     explain_model.add_argument("--max-images", type=int, default=24)
     explain_model.add_argument(
+        "--true-label",
+        action="append",
+        default=[],
+        help="Only include rows with this true label. Can be passed multiple times.",
+    )
+    explain_model.add_argument(
+        "--pred-label",
+        action="append",
+        default=[],
+        help="Only include rows with this predicted label. Can be passed multiple times.",
+    )
+    explain_model.add_argument(
         "--target",
         default="predicted",
         help="Class to explain: predicted or true.",
@@ -495,6 +507,9 @@ def cmd_build_training_set(args: argparse.Namespace) -> int:
     print(f"Rows: {summary['row_count']}")
     print(f"Labels: {summary['label_counts']}")
     print(f"Splits: {summary['split_counts']}")
+    print("Split labels:")
+    for split, label_counts in summary["split_label_counts"].items():
+        print(f"  {split}: {label_counts}")
     print(f"Skipped: {summary['skipped']}")
     return 0
 
@@ -540,6 +555,9 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
     print(f"Crop pixels: {summary['crop_pixels']}")
     print(f"Labels: {summary['labels']}")
     print(f"Splits: {summary['split_counts']}")
+    print("Split labels:")
+    for split, label_counts in summary["split_label_counts"].items():
+        print(f"  {split}: {label_counts}")
     final = summary["history"][-1] if summary["history"] else None
     if final:
         print(f"Final train: {final['train']}")
@@ -615,6 +633,8 @@ def cmd_explain_image_model(args: argparse.Namespace) -> int:
             device=args.device,
             output_width=args.output_width,
             alpha=args.alpha,
+            true_labels=tuple(args.true_label),
+            pred_labels=tuple(args.pred_label),
         )
     )
     print(f"Wrote {summary['count']} Grad-CAM explanation image(s) to {Path(summary['output_dir']).resolve()}")
@@ -622,7 +642,11 @@ def cmd_explain_image_model(args: argparse.Namespace) -> int:
     print(f"Wrote summary to {Path(summary['summary_path']).resolve()}")
     print(f"Device: {summary['device']}")
     print(f"Model: {summary['model_name']}")
-    print(f"Selection: split={summary['split']} selection={summary['selection']} target={summary['target']}")
+    print(
+        "Selection: "
+        f"split={summary['split']} selection={summary['selection']} target={summary['target']} "
+        f"true_labels={summary['true_labels'] or 'any'} pred_labels={summary['pred_labels'] or 'any'}"
+    )
     return 0
 
 

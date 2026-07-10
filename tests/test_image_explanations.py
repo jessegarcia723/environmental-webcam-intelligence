@@ -45,6 +45,46 @@ def test_select_prediction_rows_mixed_prioritizes_errors_then_low_confidence() -
     ]
 
 
+def test_select_prediction_rows_can_filter_by_true_and_pred_labels() -> None:
+    rows = [
+        {
+            "split": "test",
+            "capture_id": "true_positive",
+            "true_label": "clouds_below_peak",
+            "pred_label": "clouds_below_peak",
+            "confidence": "0.9",
+            "correct": "1",
+        },
+        {
+            "split": "test",
+            "capture_id": "false_negative",
+            "true_label": "clouds_below_peak",
+            "pred_label": "no_clouds_below_peak",
+            "confidence": "0.6",
+            "correct": "0",
+        },
+        {
+            "split": "test",
+            "capture_id": "negative",
+            "true_label": "no_clouds_below_peak",
+            "pred_label": "no_clouds_below_peak",
+            "confidence": "0.7",
+            "correct": "1",
+        },
+    ]
+
+    selected = select_prediction_rows(
+        rows,
+        split="test",
+        selection="mixed",
+        max_images=10,
+        true_labels=("clouds_below_peak",),
+        pred_labels=("clouds_below_peak",),
+    )
+
+    assert [row["capture_id"] for row in selected] == ["true_positive"]
+
+
 def test_explanation_filename_is_safe() -> None:
     filename = explanation_filename(
         1,

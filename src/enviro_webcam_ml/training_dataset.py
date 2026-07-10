@@ -98,7 +98,7 @@ def build_training_set(
             }
         )
 
-    assign_chronological_splits(
+    assign_stratified_chronological_splits(
         selected,
         train_fraction=options.train_fraction,
         val_fraction=options.val_fraction,
@@ -111,6 +111,7 @@ def build_training_set(
         "row_count": len(selected),
         "label_counts": dict(sorted(Counter(row["label"] for row in selected).items())),
         "split_counts": dict(sorted(Counter(row["split"] for row in selected).items())),
+        "split_label_counts": split_label_counts(selected),
         "skipped": dict(sorted(skipped.items())),
     }
 
@@ -174,6 +175,28 @@ def resolve_image_path(stored_path: str | None, data_dir: Path) -> Path | None:
     return path
 
 
+def assign_stratified_chronological_splits(
+    rows: list[dict[str, Any]],
+    *,
+    train_fraction: float,
+    val_fraction: float,
+    test_fraction: float,
+) -> None:
+    by_label: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_label[row["label"]].append(row)
+
+    for label_rows in by_label.values():
+        assign_chronological_splits(
+            label_rows,
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+            test_fraction=test_fraction,
+        )
+
+    rows.sort(key=lambda row: (row["captured_at_utc"], row["camera_id"], row["capture_id"]))
+
+
 def assign_chronological_splits(
     rows: list[dict[str, Any]],
     *,
@@ -203,6 +226,18 @@ def assign_chronological_splits(
             row["split"] = "val"
         else:
             row["split"] = "test"
+
+
+def split_label_counts(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    splits = sorted({row.get("split", "") for row in rows if row.get("split")})
+    labels = sorted({row.get("label", "") for row in rows if row.get("label")})
+    return {
+        split: {
+            label: sum(1 for row in rows if row.get("split") == split and row.get("label") == label)
+            for label in labels
+        }
+        for split in splits
+    }
 
 
 def write_training_csv(rows: list[dict[str, Any]], output_path: Path) -> None:

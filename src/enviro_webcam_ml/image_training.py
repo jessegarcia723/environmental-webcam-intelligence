@@ -41,6 +41,7 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
 
     label_to_idx = {label: index for index, label in enumerate(labels)}
     split_counts = Counter(row["split"] for row in rows)
+    split_label_counts = label_counts_by_split(rows, labels)
     if split_counts.get("train", 0) == 0:
         raise ValueError("Training CSV has no train rows.")
 
@@ -175,6 +176,7 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         "labels": labels,
         "label_to_idx": label_to_idx,
         "split_counts": dict(sorted(split_counts.items())),
+        "split_label_counts": split_label_counts,
         "history": history,
         "test": test_metrics,
         "detailed_metrics": detailed_metrics,
@@ -372,6 +374,18 @@ def classification_metrics(predictions: list[dict[str, Any]], labels: list[str])
         "by_label": by_label,
         "by_camera": by_camera,
         "confusion_matrix": confusion_matrix(predictions, labels),
+    }
+
+
+def label_counts_by_split(rows: list[dict[str, str]], labels: list[str]) -> dict[str, dict[str, int]]:
+    splits = sorted({row.get("split", "") for row in rows})
+    return {
+        split: {
+            label: sum(1 for row in rows if row.get("split") == split and row.get("label") == label)
+            for label in labels
+        }
+        for split in splits
+        if split
     }
 
 

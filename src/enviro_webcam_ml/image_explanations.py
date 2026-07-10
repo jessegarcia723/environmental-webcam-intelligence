@@ -31,6 +31,8 @@ class ImageExplanationOptions:
     device: str = "auto"
     output_width: int = 960
     alpha: float = 0.45
+    true_labels: tuple[str, ...] = ()
+    pred_labels: tuple[str, ...] = ()
 
 
 def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
@@ -73,6 +75,8 @@ def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
         split=options.split,
         selection=options.selection,
         max_images=options.max_images,
+        true_labels=options.true_labels,
+        pred_labels=options.pred_labels,
     )
     if not selected_rows:
         raise ValueError(
@@ -140,6 +144,8 @@ def explain_image_model(options: ImageExplanationOptions) -> dict[str, Any]:
         "split": options.split,
         "selection": options.selection,
         "target": options.target,
+        "true_labels": list(options.true_labels),
+        "pred_labels": list(options.pred_labels),
         "count": len(generated),
         "explanations": generated,
     }
@@ -215,9 +221,17 @@ def select_prediction_rows(
     split: str,
     selection: str,
     max_images: int,
+    true_labels: tuple[str, ...] = (),
+    pred_labels: tuple[str, ...] = (),
 ) -> list[dict[str, str]]:
     if split != "all":
         rows = [row for row in rows if row.get("split") == split]
+    if true_labels:
+        allowed = set(true_labels)
+        rows = [row for row in rows if row.get("true_label") in allowed]
+    if pred_labels:
+        allowed = set(pred_labels)
+        rows = [row for row in rows if row.get("pred_label") in allowed]
 
     correct_rows = [row for row in rows if is_correct(row)]
     incorrect_rows = [row for row in rows if not is_correct(row)]
@@ -350,6 +364,8 @@ def write_explanation_index(
       split=<code>{html.escape(options.split)}</code>,
       selection=<code>{html.escape(options.selection)}</code>,
       target=<code>{html.escape(options.target)}</code>,
+      true_labels=<code>{html.escape(', '.join(options.true_labels) or 'any')}</code>,
+      pred_labels=<code>{html.escape(', '.join(options.pred_labels) or 'any')}</code>,
       crop_pixels=<code>{html.escape(str(crop_pixels or {}))}</code>,
       labels=<code>{html.escape(', '.join(labels))}</code>
     </p>

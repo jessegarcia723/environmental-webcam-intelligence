@@ -185,6 +185,8 @@ data/training/marine_layer_detection_training.csv
 
 The training-set builder also remaps old absolute image paths stored by the collector Mac to the configured `data_dir`, so a database synced from the old Mac can still point at images under the M5's Google Drive path.
 
+The builder assigns train/val/test splits separately within each label, while preserving chronological order inside each label. That keeps minority classes represented in validation/test when enough examples exist.
+
 Train the first image-only model:
 
 ```bash
@@ -237,6 +239,15 @@ envirocam compare-image-models --config configs/mount_tam_training.yaml
 
 Each model's `metadata.json` includes overall, per-label, and per-camera metrics. Each `predictions.csv` includes one row per evaluated image, with `camera_id`, true label, predicted label, confidence, and correctness. Camera comparison groups come from the task config, so this works for other sites/scenarios too.
 
+Training-set building and model training both print a split-by-label table, for example:
+
+```text
+Split labels:
+  train: {'clouds_below_peak': 100, 'no_clouds_below_peak': 95}
+  val: {'clouds_below_peak': 21, 'no_clouds_below_peak': 20}
+  test: {'clouds_below_peak': 22, 'no_clouds_below_peak': 21}
+```
+
 The comparison command writes:
 
 ```text
@@ -272,6 +283,22 @@ open data/models/marine_layer_detection/efficientnet_b0/explanations/index.html
 ```
 
 Useful selection modes are `mixed`, `incorrect`, `low-confidence`, `high-confidence`, and `correct`. `mixed` is the best first look: it shows mistakes first, then lower-confidence correct predictions if there are no mistakes. The heatmap highlights image regions that most influenced the selected class; it is a sanity check, not a causal proof.
+
+To force the Grad-CAM report to show positive Mount Tam cases, filter to the positive true label:
+
+```bash
+envirocam explain-image-model \
+  --checkpoint data/models/marine_layer_detection/efficientnet_b0/model.pt \
+  --predictions data/models/marine_layer_detection/efficientnet_b0/predictions.csv \
+  --split test \
+  --true-label clouds_below_peak \
+  --selection low-confidence \
+  --max-images 30 \
+  --device mps \
+  --output-dir data/models/marine_layer_detection/efficientnet_b0/explanations_positive
+```
+
+If you specifically want true positives, add `--pred-label clouds_below_peak`. If you want missed positive cases, use `--true-label clouds_below_peak --pred-label no_clouds_below_peak`.
 
 ## Generalizing to a new geophysical scenario
 

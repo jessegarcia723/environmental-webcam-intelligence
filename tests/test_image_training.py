@@ -5,6 +5,7 @@ from PIL import Image
 
 from enviro_webcam_ml.image_training import (
     classification_metrics,
+    label_counts_by_split,
     metric_summary,
     read_training_rows,
 )
@@ -55,6 +56,22 @@ def test_read_training_rows_keeps_only_existing_images(tmp_path: Path) -> None:
 def test_metric_summary_handles_empty_and_non_empty_counts() -> None:
     assert metric_summary(0.0, 0, 0) == {"loss": None, "accuracy": None, "count": 0}
     assert metric_summary(2.0, 3, 4) == {"loss": 0.5, "accuracy": 0.75, "count": 4}
+
+
+def test_label_counts_by_split_cross_tabs_labels() -> None:
+    rows = [
+        {"split": "train", "label": "positive"},
+        {"split": "train", "label": "negative"},
+        {"split": "train", "label": "negative"},
+        {"split": "test", "label": "positive"},
+    ]
+
+    counts = label_counts_by_split(rows, ["negative", "positive"])
+
+    assert counts == {
+        "test": {"negative": 0, "positive": 1},
+        "train": {"negative": 2, "positive": 1},
+    }
 
 
 def test_classification_metrics_include_label_and_camera_breakdowns() -> None:
