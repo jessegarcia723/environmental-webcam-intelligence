@@ -33,6 +33,7 @@ from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_mo
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
+from enviro_webcam_ml.weather_lasso import WeatherLassoOptions, train_weather_lasso
 from enviro_webcam_ml.weather.open_meteo import fetch_forecast
 
 
@@ -292,6 +293,50 @@ def build_parser() -> argparse.ArgumentParser:
     train_compare.add_argument("--output-csv", help="Defaults to <models-dir>/comparison.csv.")
     train_compare.add_argument("--output-md", help="Defaults to <models-dir>/comparison.md.")
     train_compare.set_defaults(func=cmd_train_compare_image_models)
+
+    weather_lasso = sub.add_parser(
+        "train-weather-lasso",
+        help="Train a weather-only L1 logistic-regression baseline for the positive class.",
+    )
+    weather_lasso.add_argument("--config", required=True)
+    weather_lasso.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    weather_lasso.add_argument("--training-csv", help="Defaults to task.training_csv.")
+    weather_lasso.add_argument("--output-dir", help="Defaults to task.model_dir/weather_lasso.")
+    weather_lasso.add_argument(
+        "--positive-label",
+        help="Positive class to predict. Defaults to task.positive_label.",
+    )
+    weather_lasso.add_argument(
+        "--feature",
+        action="append",
+        default=[],
+        help="Weather variable to use. Can be passed multiple times. Defaults to all numeric weather variables.",
+    )
+    weather_lasso.add_argument(
+        "--max-weather-age-minutes",
+        type=float,
+        default=90.0,
+        help="Largest allowed time difference between capture and nearest hourly weather record.",
+    )
+    weather_lasso.add_argument(
+        "--c",
+        type=float,
+        default=1.0,
+        help="Inverse L1 regularization strength. Smaller values make more coefficients exactly zero.",
+    )
+    weather_lasso.add_argument(
+        "--positive-threshold",
+        type=float,
+        default=0.5,
+        help="Probability threshold for predicting the positive class.",
+    )
+    weather_lasso.add_argument(
+        "--class-weight",
+        default="none",
+        choices=["none", "balanced"],
+        help="Use 'balanced' to upweight the minority class.",
+    )
+    weather_lasso.set_defaults(func=cmd_train_weather_lasso)
 
     compare_models = sub.add_parser(
         "compare-image-models",
@@ -826,6 +871,52 @@ def cmd_train_compare_image_models(args: argparse.Namespace) -> int:
             f"test_sensitivity={best.get('test_sensitivity')} "
             f"test_specificity={best.get('test_specificity')}"
         )
+    return 0
+
+
+def cmd_train_weather_lasso(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    training_csv = Path(args.training_csv) if args.training_csv else config.task_training_csv_path(task_id)
+    output_dir = Path(args.output_dir) if args.output_dir else config.task_model_dir(task_id) / "weather_lasso"
+    positive_label = args.positive_label or config.task_positive_label(task_id)
+    if not positive_label:
+        raise ValueError("A positive label is required. Set task.positive_label or pass --positive-label.")
+
+    with db.connect(config.database_path) as conn:
+        summary = train_weather_lasso(
+            conn,
+            WeatherLassoOptions(
+                training_csv=training_csv,
+                output_dir=output_dir,
+                positive_label=positive_label,
+                features=tuple(args.feature),
+                max_weather_age_minutes=args.max_weather_age_minutes,
+                c=args.c,
+                positive_threshold=args.positive_threshold,
+                class_weight=args.class_weight,
+            ),
+        )
+
+    print(f"Wrote weather model to {summary['model_path']}")
+    print(f"Wrote metadata to {summary['metadata_path']}")
+    print(f"Wrote predictions to {summary['predictions_path']}")
+    print(f"Wrote coefficients to {summary['coefficients_path']}")
+    print(f"Positive label: {summary['positive_label']}")
+    print(f"Positive threshold: {summary['positive_threshold']}")
+    print(f"L1 C: {summary['c']}")
+    print(f"Class weight: {summary['class_weight']}")
+    print(f"Matched rows: {summary['matched_rows']}")
+    print(f"Splits: {summary['split_counts']}")
+    if summary["skipped"]:
+        print(f"Skipped: {summary['skipped']}")
+    print("Nonzero coefficients:")
+    for row in summary["nonzero_coefficients"]:
+        print(f"  {row['feature']}: {row['coefficient']:.6g}")
+    test_binary = summary["detailed_metrics"]["test"]["binary"]
+    print(f"Test positive-class detail: {test_binary}")
+    print(f"Test by camera: {summary['detailed_metrics']['test']['by_camera']}")
     return 0
 
 

@@ -326,6 +326,30 @@ data/models/marine_layer_detection/comparison.md
 
 My current hunch: with a small dataset, a pretrained `efficientnet_b0` or `mobilenet_v3_small` will likely beat a non-pretrained `resnet18`. But we should trust the held-out test metrics, not the hunch.
 
+Train a weather-only LASSO-style baseline:
+
+```bash
+envirocam train-weather-lasso \
+  --config configs/mount_tam_training.yaml
+```
+
+For the binary question “is this `clouds_below_peak`?”, this uses L1-regularized logistic regression. It joins each labeled capture to the nearest hourly weather record for the same camera, using only weather variables such as humidity, dew point, pressure, wind, and cloud-cover fields. It writes:
+
+```text
+data/models/marine_layer_detection/weather_lasso/model.pkl
+data/models/marine_layer_detection/weather_lasso/metadata.json
+data/models/marine_layer_detection/weather_lasso/predictions.csv
+data/models/marine_layer_detection/weather_lasso/coefficients.csv
+```
+
+`coefficients.csv` is the feature-importance view: positive coefficients push toward `clouds_below_peak`, negative coefficients push away, and exactly-zero coefficients were dropped by the L1 penalty. To make the model more selective, decrease `--c`; to make it keep more variables, increase `--c`:
+
+```bash
+envirocam train-weather-lasso \
+  --config configs/mount_tam_training.yaml \
+  --c 0.25
+```
+
 Generate Grad-CAM visual explanations for a trained image model:
 
 ```bash
