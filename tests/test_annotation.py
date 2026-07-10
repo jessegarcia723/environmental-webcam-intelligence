@@ -7,12 +7,15 @@ from enviro_webcam_ml.annotation import (
     adjudication_report,
     annotation_stats,
     delete_annotation,
+    favorite_rows,
     image_path_for_capture,
     load_model_predictions,
     next_unannotated_frame,
     next_adjudication_case,
+    pacific_time_label,
     save_annotation,
     save_adjudication,
+    save_favorite,
     task_labels,
 )
 from enviro_webcam_ml.config import load_config
@@ -88,6 +91,7 @@ def test_next_unannotated_frame_skips_existing_annotator_label(tmp_path: Path) -
         )
         assert first is not None
         assert first["capture_id"] == first_capture_id
+        assert first["captured_at_pacific"] == "2026-07-08 05:00:00 AM PDT"
 
         save_annotation(
             conn,
@@ -186,6 +190,62 @@ def test_save_annotation_updates_same_annotator_row(tmp_path: Path) -> None:
 
     assert [row["label"] for row in rows] == ["no_clouds_below_peak"]
     assert stats["totals"] == [{"annotator": "jesse", "count": 1}]
+    assert stats["favorite_count"] == 0
+
+
+def test_save_favorite_is_separate_from_training_labels(tmp_path: Path) -> None:
+    db_path = tmp_path / "favorites.sqlite3"
+    image_path = tmp_path / "frame.jpg"
+    Image.new("RGB", (8, 8), color=(120, 130, 140)).save(image_path)
+    db.init_db(db_path)
+    with db.connect(db_path) as conn:
+        capture_id = db.insert_capture(
+            conn,
+            camera_id="camera",
+            pose_version="initial",
+            captured_at_utc="2026-07-08T12:00:00+00:00",
+            requested_url="https://example.test/1.jpg",
+            http_status=200,
+            content_type="image/jpeg",
+            byte_count=100,
+            sha256="abc",
+            error=None,
+        )
+        db.insert_image_asset(
+            conn,
+            capture_id=capture_id,
+            path=image_path,
+            sha256="abc",
+            width=8,
+            height=8,
+        )
+        save_favorite(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            annotator="jesse",
+            notes="pretty cloud deck",
+        )
+        save_favorite(
+            conn,
+            capture_id=capture_id,
+            task_id="marine_layer_detection",
+            annotator="jesse",
+            notes="updated note",
+        )
+        rows = favorite_rows(conn, task_id="marine_layer_detection")
+        annotations = conn.execute("SELECT COUNT(*) AS count FROM annotation").fetchone()["count"]
+        stats = annotation_stats(conn, task_id="marine_layer_detection")
+
+    assert annotations == 0
+    assert stats["favorite_count"] == 1
+    assert len(rows) == 1
+    assert rows[0]["notes"] == "updated note"
+    assert rows[0]["captured_at_pacific"] == "2026-07-08 05:00:00 AM PDT"
+
+
+def test_pacific_time_label_handles_winter_standard_time() -> None:
+    assert pacific_time_label("2026-01-08T12:00:00+00:00") == "2026-01-08 04:00:00 AM PST"
 
 
 def test_delete_annotation_removes_only_matching_annotator(tmp_path: Path) -> None:
@@ -300,6 +360,7 @@ def test_adjudication_case_report_and_prediction_lookup(tmp_path: Path) -> None:
         assert case is not None
         assert case["agreement"] is False
         assert case["model_prediction"]["pred_label"] == "no_clouds_below_peak"
+        assert case["captured_at_pacific"] == "2026-07-08 05:00:00 AM PDT"
 
         save_adjudication(
             conn,
@@ -327,6 +388,7 @@ def test_adjudication_case_report_and_prediction_lookup(tmp_path: Path) -> None:
     assert report["disagreements"] == 1
     assert filtered_report["disagreements"] == 1
     assert report["adjudicated"] == 1
+    assert report["favorite_count"] == 0
     assert report["remaining_disagreements"] == 0
     assert report["final_label_counts"] == {"clouds_below_peak": 1}
     assert next_case is None

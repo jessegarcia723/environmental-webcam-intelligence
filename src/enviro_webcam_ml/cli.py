@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from enviro_webcam_ml import db
 from enviro_webcam_ml.annotation_analysis import (
@@ -16,6 +18,7 @@ from enviro_webcam_ml.annotation_analysis import (
 from enviro_webcam_ml.annotation import (
     AdjudicationServerOptions,
     AnnotationServerOptions,
+    favorite_rows,
     serve_adjudication_app,
     serve_annotation_app,
 )
@@ -25,11 +28,15 @@ from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
 from enviro_webcam_ml.image_explanations import ImageExplanationOptions, explain_image_model
+from enviro_webcam_ml.image_paths import resolve_image_path
 from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_model
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
 from enviro_webcam_ml.weather.open_meteo import fetch_forecast
+
+
+DEFAULT_IMAGE_MODELS = ("resnet18", "efficientnet_b0", "mobilenet_v3_small")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,6 +175,12 @@ def build_parser() -> argparse.ArgumentParser:
     analysis.add_argument("--disagreements-output", default="data/reports/disagreements.csv")
     analysis.set_defaults(func=cmd_analyze_annotations)
 
+    favorites = sub.add_parser("export-favorites", help="Export bookmarked favorite frames to CSV.")
+    favorites.add_argument("--config", required=True)
+    favorites.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    favorites.add_argument("--output", default="data/reports/favorites.csv")
+    favorites.set_defaults(func=cmd_export_favorites)
+
     backup = sub.add_parser("backup-db", help="Write a consistent SQLite database snapshot.")
     backup.add_argument("--config", required=True)
     backup.add_argument("--output", required=True)
@@ -239,6 +252,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Training class weight as LABEL=WEIGHT. Can be passed multiple times.",
     )
     train_model.set_defaults(func=cmd_train_image_model)
+
+    train_compare = sub.add_parser(
+        "train-compare-image-models",
+        help="Train several image models, then write the comparison report.",
+    )
+    train_compare.add_argument("--config", help="Optional config used to derive task-specific default paths.")
+    train_compare.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    train_compare.add_argument("--training-csv", help="Defaults to task.training_csv when --config is provided.")
+    train_compare.add_argument("--models-dir", help="Defaults to task.model_dir when --config is provided.")
+    train_compare.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        help=f"Model to train. Can be passed multiple times. Defaults to: {', '.join(DEFAULT_IMAGE_MODELS)}.",
+    )
+    train_compare.add_argument("--epochs", type=int, default=5)
+    train_compare.add_argument("--batch-size", type=int, default=16)
+    train_compare.add_argument("--learning-rate", type=float, default=0.001)
+    train_compare.add_argument("--image-size", type=int, default=224)
+    train_compare.add_argument("--num-workers", type=int, default=0)
+    train_compare.add_argument("--pretrained", action="store_true")
+    train_compare.add_argument("--device", default="auto")
+    train_compare.add_argument(
+        "--positive-label",
+        help="Positive class for PPV/sensitivity/specificity. Defaults to task.positive_label with --config.",
+    )
+    train_compare.add_argument(
+        "--positive-threshold",
+        type=float,
+        help="Optional probability threshold for predicting the positive class.",
+    )
+    train_compare.add_argument(
+        "--class-weight",
+        action="append",
+        default=[],
+        help="Training class weight as LABEL=WEIGHT. Can be passed multiple times.",
+    )
+    train_compare.add_argument("--output-csv", help="Defaults to <models-dir>/comparison.csv.")
+    train_compare.add_argument("--output-md", help="Defaults to <models-dir>/comparison.md.")
+    train_compare.set_defaults(func=cmd_train_compare_image_models)
 
     compare_models = sub.add_parser(
         "compare-image-models",
@@ -551,6 +604,39 @@ def cmd_analyze_annotations(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_favorites(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with db.connect(config.database_path) as conn:
+        rows = favorite_rows(conn, task_id=task_id)
+
+    fieldnames = [
+        "capture_id",
+        "task_id",
+        "annotator",
+        "camera_id",
+        "captured_at_utc",
+        "captured_at_pacific",
+        "favorited_at_utc",
+        "notes",
+        "image_path",
+    ]
+    for row in rows:
+        resolved = resolve_image_path(row.get("image_path"), config.data_dir)
+        if resolved is not None:
+            row["image_path"] = str(resolved)
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Wrote {len(rows)} favorite frame(s) to {output_path.resolve()}")
+    return 0
+
+
 def cmd_backup_db(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     output_path = Path(args.output)
@@ -663,6 +749,87 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
             class_weights=class_weights,
         )
     )
+    print_training_summary(summary)
+    return 0
+
+
+def cmd_train_compare_image_models(args: argparse.Namespace) -> int:
+    config = load_config(args.config) if args.config else None
+    task_id = None
+    if config is not None:
+        task_id = config.default_task_id if args.task_id is None else args.task_id
+    training_csv = (
+        Path(args.training_csv)
+        if args.training_csv
+        else config.task_training_csv_path(task_id) if config is not None
+        else Path("data/training/training.csv")
+    )
+    models_dir = (
+        Path(args.models_dir)
+        if args.models_dir
+        else config.task_model_dir(task_id) if config is not None
+        else Path("data/models")
+    )
+    crop_pixels = config.task_image_crop_pixels(task_id) if config is not None else None
+    positive_label = (
+        args.positive_label
+        if args.positive_label
+        else config.task_positive_label(task_id) if config is not None
+        else None
+    )
+    positive_threshold = (
+        args.positive_threshold
+        if args.positive_threshold is not None
+        else config.task_positive_threshold(task_id) if config is not None
+        else None
+    )
+    class_weights = config.task_class_weights(task_id) if config is not None else {}
+    class_weights.update(parse_class_weight_args(args.class_weight))
+    model_names = tuple(args.model) if args.model else DEFAULT_IMAGE_MODELS
+
+    for model_name in model_names:
+        print(f"\n=== Training {model_name} ===")
+        summary = train_image_model(
+            ImageTrainingOptions(
+                training_csv=training_csv,
+                output_dir=models_dir / model_name,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.learning_rate,
+                image_size=args.image_size,
+                num_workers=args.num_workers,
+                model_name=model_name,
+                pretrained=args.pretrained,
+                device=args.device,
+                crop_pixels=crop_pixels,
+                positive_label=positive_label,
+                positive_threshold=positive_threshold,
+                class_weights=class_weights,
+            )
+        )
+        print_training_summary(summary)
+
+    output_csv = Path(args.output_csv) if args.output_csv else models_dir / "comparison.csv"
+    output_md = Path(args.output_md) if args.output_md else models_dir / "comparison.md"
+    camera_ids = config.task_comparison_camera_ids(task_id) if config is not None else ()
+    rows = compare_image_models(models_dir, output_csv, output_md, camera_ids=camera_ids)
+    print(f"\nWrote comparison CSV to {output_csv.resolve()}")
+    print(f"Wrote comparison Markdown to {output_md.resolve()}")
+    if rows:
+        best = rows[0]
+        print(
+            "Best run: "
+            f"{best['run']} model={best['model_name']} "
+            f"test_accuracy={best['test_accuracy']} "
+            f"val_accuracy={best['val_accuracy']} "
+            f"test_ppv={best.get('test_ppv')} "
+            f"test_sensitivity={best.get('test_sensitivity')} "
+            f"test_specificity={best.get('test_specificity')}"
+        )
+    return 0
+
+
+def print_training_summary(summary: dict[str, Any]) -> None:
     print(f"Wrote checkpoint to {summary['checkpoint_path']}")
     print(f"Wrote metadata to {summary['metadata_path']}")
     print(f"Wrote predictions to {summary['predictions_path']}")
@@ -689,7 +856,6 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
     if test_binary:
         print(f"Test positive-class detail: {test_binary}")
     print(f"Test by camera: {test_by_camera}")
-    return 0
 
 
 def cmd_compare_image_models(args: argparse.Namespace) -> int:

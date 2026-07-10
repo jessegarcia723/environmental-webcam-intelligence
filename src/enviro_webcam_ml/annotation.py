@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import json
-import mimetypes
-import sqlite3
-import webbrowser
 import csv
 from dataclasses import dataclass
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import mimetypes
 from pathlib import Path
+import sqlite3
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+import webbrowser
+from zoneinfo import ZoneInfo
 
 from enviro_webcam_ml import db
 from enviro_webcam_ml.config import AppConfig
@@ -125,6 +127,8 @@ def make_handler(config: AppConfig, options: AnnotationServerOptions):
                 self.handle_annotate()
             elif parsed.path == "/api/unannotate":
                 self.handle_unannotate()
+            elif parsed.path == "/api/favorite":
+                self.handle_favorite()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -226,6 +230,27 @@ def make_handler(config: AppConfig, options: AnnotationServerOptions):
                 )
             self.send_json({"ok": True, "deleted": deleted})
 
+        def handle_favorite(self) -> None:
+            try:
+                payload = self.read_json()
+                capture_id = int(payload["capture_id"])
+                task_id = str(payload.get("task_id") or options.task_id)
+                annotator = str(payload.get("annotator") or "")
+                notes = payload.get("notes")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, f"Invalid favorite payload: {exc}")
+                return
+
+            with db.connect(config.database_path) as conn:
+                save_favorite(
+                    conn,
+                    capture_id=capture_id,
+                    task_id=task_id,
+                    annotator=annotator,
+                    notes=notes,
+                )
+            self.send_json({"ok": True})
+
         def read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length)
@@ -267,6 +292,7 @@ def annotation_config_payload(config: AppConfig, options: AnnotationServerOption
                 "LB": "label 5",
                 "RB": "skip",
                 "View/Back": "undo last annotation",
+                "D-pad Down": "favorite frame",
             },
         },
     }
@@ -302,6 +328,8 @@ def make_adjudication_handler(
             parsed = urlparse(self.path)
             if parsed.path == "/api/adjudicate":
                 self.handle_adjudicate()
+            elif parsed.path == "/api/favorite":
+                self.handle_favorite()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -379,6 +407,25 @@ def make_adjudication_handler(
                     notes=notes,
                     model_label=prediction.get("pred_label"),
                     model_confidence=prediction.get("confidence"),
+                )
+            self.send_json({"ok": True})
+
+        def handle_favorite(self) -> None:
+            try:
+                payload = self.read_json()
+                capture_id = int(payload["capture_id"])
+                notes = payload.get("notes")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, f"Invalid favorite payload: {exc}")
+                return
+
+            with db.connect(config.database_path) as conn:
+                save_favorite(
+                    conn,
+                    capture_id=capture_id,
+                    task_id=options.task_id,
+                    annotator=options.adjudicator,
+                    notes=notes,
                 )
             self.send_json({"ok": True})
 
@@ -492,6 +539,7 @@ def next_unannotated_frame(
         "camera_id": row["camera_id"],
         "pose_version": row["pose_version"],
         "captured_at_utc": row["captured_at_utc"],
+        "captured_at_pacific": pacific_time_label(row["captured_at_utc"]),
         "image_url": f"/image/{row['capture_id']}",
         "image_path": image_path,
         "width": row["width"],
@@ -558,6 +606,56 @@ def delete_annotation(
     return bool(cur.rowcount)
 
 
+def save_favorite(
+    conn: sqlite3.Connection,
+    *,
+    capture_id: int,
+    task_id: str,
+    annotator: str,
+    notes: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO favorite_frame (
+          capture_id, task_id, annotator, notes, created_at_utc
+        )
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(capture_id, task_id, annotator) DO UPDATE SET
+          notes = excluded.notes,
+          created_at_utc = excluded.created_at_utc
+        """,
+        (capture_id, task_id, annotator, notes, db.utc_now_iso()),
+    )
+
+
+def favorite_rows(conn: sqlite3.Connection, *, task_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+          f.capture_id,
+          f.task_id,
+          COALESCE(f.annotator, '') AS annotator,
+          f.notes,
+          f.created_at_utc AS favorited_at_utc,
+          c.camera_id,
+          c.captured_at_utc,
+          ia.path AS image_path
+        FROM favorite_frame f
+        JOIN capture c ON c.id = f.capture_id
+        LEFT JOIN image_asset ia ON ia.capture_id = f.capture_id
+        WHERE f.task_id = ?
+        ORDER BY f.created_at_utc, f.capture_id, annotator
+        """,
+        (task_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["captured_at_pacific"] = pacific_time_label(row["captured_at_utc"])
+        result.append(item)
+    return result
+
+
 def annotation_stats(conn: sqlite3.Connection, *, task_id: str) -> dict[str, Any]:
     label_rows = conn.execute(
         """
@@ -579,9 +677,14 @@ def annotation_stats(conn: sqlite3.Connection, *, task_id: str) -> dict[str, Any
         """,
         (task_id,),
     ).fetchall()
+    favorite_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM favorite_frame WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()["count"]
     return {
         "totals": [dict(row) for row in total_rows],
         "by_label": [dict(row) for row in label_rows],
+        "favorite_count": favorite_count,
     }
 
 
@@ -661,6 +764,7 @@ def adjudication_cases(
                 "camera_id": row["camera_id"],
                 "pose_version": row["pose_version"],
                 "captured_at_utc": row["captured_at_utc"],
+                "captured_at_pacific": pacific_time_label(row["captured_at_utc"]),
                 "image_url": f"/image/{capture_id}",
                 "image_path": image_path,
                 "width": row["width"],
@@ -752,6 +856,10 @@ def adjudication_report(
     for case in cases:
         if case["final_label"]:
             final_counts[case["final_label"]] = final_counts.get(case["final_label"], 0) + 1
+    favorite_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM favorite_frame WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()["count"]
     return {
         "task_id": task_id,
         "double_labeled": total,
@@ -762,6 +870,7 @@ def adjudication_report(
             1 for case in cases if not case["agreement"] and not case["already_adjudicated"]
         ),
         "final_label_counts": dict(sorted(final_counts.items())),
+        "favorite_count": favorite_count,
     }
 
 
@@ -827,6 +936,19 @@ def parse_optional_float(value: float | str | None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def pacific_time_label(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        captured = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+    if captured.tzinfo is None:
+        captured = captured.replace(tzinfo=ZoneInfo("UTC"))
+    local = captured.astimezone(ZoneInfo("America/Los_Angeles"))
+    return local.strftime("%Y-%m-%d %I:%M:%S %p %Z")
 
 
 def image_path_for_capture(
@@ -1027,6 +1149,7 @@ ANNOTATION_HTML = r"""<!doctype html>
     button:hover { border-color: var(--accent); }
     button.skip { color: var(--warn); }
     button.undo { color: #93c5fd; }
+    button.favorite { color: #f9a8d4; }
     .toast {
       min-height: 1.2rem;
       color: var(--accent);
@@ -1092,6 +1215,7 @@ ANNOTATION_HTML = r"""<!doctype html>
     const xboxButtons = [0, 1, 2, 3, 4]; // A, B, X, Y, LB
     const skipButton = 5; // RB
     const undoButton = 8; // View/Back on standard Xbox mappings
+    const favoriteButton = 13; // D-pad Down on standard Xbox mappings
     const xboxNames = ["A", "B", "X", "Y", "LB"];
 
     async function init() {
@@ -1138,6 +1262,11 @@ ANNOTATION_HTML = r"""<!doctype html>
       undo.textContent = side === "left" ? "Z · View · Undo" : "O · View · Undo";
       undo.addEventListener("click", () => undoLast(side));
       target.appendChild(undo);
+      const favorite = document.createElement("button");
+      favorite.className = "favorite";
+      favorite.textContent = side === "left" ? "F · D-pad ↓ · Favorite" : "L · D-pad ↓ · Favorite";
+      favorite.addEventListener("click", () => favoriteFrame(side));
+      target.appendChild(favorite);
     }
 
     function renderLegend(side) {
@@ -1150,10 +1279,12 @@ ANNOTATION_HTML = r"""<!doctype html>
       });
       const skipKey = side === "left" ? "Q" : "P";
       const undoKey = side === "left" ? "Z" : "O";
+      const favoriteKey = side === "left" ? "F" : "L";
       target.innerHTML = [
         ...labelHints,
         `<span><kbd>${skipKey}</kbd> / <kbd>RB</kbd> skip frame</span>`,
         `<span><kbd>${undoKey}</kbd> / <kbd>View</kbd> undo last saved label</span>`,
+        `<span><kbd>${favoriteKey}</kbd> / <kbd>D-pad ↓</kbd> save favorite</span>`,
       ].join("");
     }
 
@@ -1188,7 +1319,8 @@ ANNOTATION_HTML = r"""<!doctype html>
       meta.innerHTML = [
         `#${frame.capture_id}`,
         escapeHtml(frame.camera_id),
-        escapeHtml(frame.captured_at_utc),
+        `Pacific: ${escapeHtml(frame.captured_at_pacific || "")}`,
+        `UTC: ${escapeHtml(frame.captured_at_utc)}`,
         frame.is_night ? "night" : null,
         frame.is_blurry ? "blurry" : null,
         frame.is_duplicate ? "duplicate" : null,
@@ -1243,6 +1375,23 @@ ANNOTATION_HTML = r"""<!doctype html>
       }
     }
 
+    async function favoriteFrame(side) {
+      const pane = state.panes[side];
+      if (!pane.frame) return;
+      const captureId = pane.frame.capture_id;
+      try {
+        await postJson("/api/favorite", {
+          capture_id: captureId,
+          task_id: state.taskId,
+          annotator: pane.annotator,
+        });
+        toast(side, `Favorited #${captureId}`);
+        refreshStats();
+      } catch (error) {
+        toast(side, error.message, true);
+      }
+    }
+
     function onKeydown(event) {
       const key = event.key;
       if (key.toLowerCase() === "q") {
@@ -1259,6 +1408,14 @@ ANNOTATION_HTML = r"""<!doctype html>
       }
       if (key.toLowerCase() === "o") {
         undoLast("right");
+        return;
+      }
+      if (key.toLowerCase() === "f") {
+        favoriteFrame("left");
+        return;
+      }
+      if (key.toLowerCase() === "l") {
+        favoriteFrame("right");
         return;
       }
       for (const side of ["left", "right"]) {
@@ -1293,6 +1450,9 @@ ANNOTATION_HTML = r"""<!doctype html>
       if (pressed[undoButton] && !pane.lastButtons[undoButton]) {
         undoLast(side);
       }
+      if (pressed[favoriteButton] && !pane.lastButtons[favoriteButton]) {
+        favoriteFrame(side);
+      }
       pane.lastButtons = pressed;
     }
 
@@ -1324,11 +1484,10 @@ ANNOTATION_HTML = r"""<!doctype html>
         const params = new URLSearchParams({ task_id: state.taskId });
         const payload = await fetchJson(`/api/stats?${params}`);
         const totals = (payload.stats.totals || []).map(row => `${row.annotator || "unknown"}: ${row.count}`).join(" · ");
-        if (totals) {
-          const count = connectedGamepads().length;
-          document.getElementById("globalStatus").textContent =
-            `Task: ${state.taskId} · ${totals} · gamepads detected: ${count}`;
-        }
+        const favorites = payload.stats.favorite_count || 0;
+        const count = connectedGamepads().length;
+        document.getElementById("globalStatus").textContent =
+          `Task: ${state.taskId} · ${totals || "no annotations yet"} · favorites: ${favorites} · gamepads detected: ${count}`;
       } catch (_) {
         // Stats are helpful, not critical.
       }
@@ -1498,6 +1657,7 @@ ADJUDICATION_HTML = r"""<!doctype html>
     }
     button:hover { border-color: var(--accent); }
     button.primary { background: #143356; border-color: #2e7bb5; }
+    button.favorite { color: #f9a8d4; }
     textarea {
       width: 100%;
       min-height: 5rem;
@@ -1554,6 +1714,7 @@ ADJUDICATION_HTML = r"""<!doctype html>
       <section class="card">
         <h2>Final label</h2>
         <div class="buttons" id="buttons"></div>
+        <button class="favorite" id="favoriteButton">F · D-pad ↓ · Favorite this frame</button>
       </section>
       <section class="card">
         <h2>Notes</h2>
@@ -1568,8 +1729,11 @@ ADJUDICATION_HTML = r"""<!doctype html>
   </main>
 
   <script>
-    const state = { taskId: null, labels: [], current: null };
+    const state = { taskId: null, labels: [], current: null, lastButtons: [] };
     const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+    const xboxButtons = [0, 1, 2, 3, 4]; // A, B, X, Y, LB
+    const favoriteButton = 13; // D-pad Down on standard Xbox mappings
+    const xboxNames = ["A", "B", "X", "Y", "LB"];
 
     async function init() {
       const config = await fetchJson("/api/config");
@@ -1577,9 +1741,13 @@ ADJUDICATION_HTML = r"""<!doctype html>
       state.labels = config.labels;
       const annotators = (config.annotators || []).length ? ` · annotators: ${config.annotators.join(", ")}` : "";
       document.getElementById("status").textContent =
-        `Task: ${config.task_id} · adjudicator: ${config.adjudicator}${annotators} · mode: ${config.include_agreements ? "all double-labeled" : "disagreements only"}`;
+        `Task: ${config.task_id} · adjudicator: ${config.adjudicator}${annotators} · mode: ${config.include_agreements ? "all double-labeled" : "disagreements only"} · gamepad: press A/B/X/Y`;
       renderButtons();
+      document.getElementById("favoriteButton").addEventListener("click", favoriteCurrent);
       window.addEventListener("keydown", onKeydown);
+      window.addEventListener("gamepadconnected", updateGamepadStatus);
+      window.addEventListener("gamepaddisconnected", updateGamepadStatus);
+      requestAnimationFrame(pollGamepads);
       await refreshReport();
       await loadNext();
     }
@@ -1590,8 +1758,9 @@ ADJUDICATION_HTML = r"""<!doctype html>
       state.labels.forEach((label, index) => {
         const button = document.createElement("button");
         const key = keys[index] || "";
+        const xbox = xboxNames[index] || "";
         button.className = "primary";
-        button.textContent = `${key ? key + " · " : ""}${pretty(label)}`;
+        button.textContent = `${key ? key + " · " : ""}${xbox ? xbox + " · " : ""}${pretty(label)}`;
         button.addEventListener("click", () => saveFinal(label));
         target.appendChild(button);
       });
@@ -1621,7 +1790,8 @@ ADJUDICATION_HTML = r"""<!doctype html>
       meta.innerHTML = [
         `#${item.capture_id}`,
         escapeHtml(item.camera_id),
-        escapeHtml(item.captured_at_utc),
+        `Pacific: ${escapeHtml(item.captured_at_pacific || "")}`,
+        `UTC: ${escapeHtml(item.captured_at_utc)}`,
         item.agreement ? '<span class="pill good">agreement</span>' : '<span class="pill bad">disagreement</span>',
       ].filter(Boolean).map(value => `<div>${value}</div>`).join("");
       annotations.innerHTML = Object.entries(item.annotations || {})
@@ -1656,6 +1826,20 @@ ADJUDICATION_HTML = r"""<!doctype html>
       }
     }
 
+    async function favoriteCurrent() {
+      if (!state.current) return;
+      try {
+        await postJson("/api/favorite", {
+          capture_id: state.current.capture_id,
+          notes: document.getElementById("notes").value,
+        });
+        toast(`Favorited #${state.current.capture_id}`);
+        await refreshReport();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    }
+
     async function refreshReport() {
       const payload = await fetchJson("/api/report");
       const report = payload.report;
@@ -1665,15 +1849,49 @@ ADJUDICATION_HTML = r"""<!doctype html>
         `disagreements: ${report.disagreements}`,
         `adjudicated: ${report.adjudicated}`,
         `remaining disagreements: ${report.remaining_disagreements}`,
+        `favorites: ${report.favorite_count || 0}`,
         `final labels: ${escapeHtml(JSON.stringify(report.final_label_counts))}`,
       ].map(value => `<div>${value}</div>`).join("");
     }
 
     function onKeydown(event) {
+      if (event.key.toLowerCase() === "f") {
+        favoriteCurrent();
+        return;
+      }
       const index = keys.indexOf(event.key);
       if (index >= 0 && index < state.labels.length) {
         saveFinal(state.labels[index]);
       }
+    }
+
+    function pollGamepads() {
+      const pad = connectedGamepads()[0];
+      updateGamepadStatus();
+      if (pad) {
+        const pressed = pad.buttons.map(button => button.pressed);
+        xboxButtons.forEach((buttonIndex, labelIndex) => {
+          if (pressed[buttonIndex] && !state.lastButtons[buttonIndex] && labelIndex < state.labels.length) {
+            saveFinal(state.labels[labelIndex]);
+          }
+        });
+        if (pressed[favoriteButton] && !state.lastButtons[favoriteButton]) {
+          favoriteCurrent();
+        }
+        state.lastButtons = pressed;
+      }
+      requestAnimationFrame(pollGamepads);
+    }
+
+    function connectedGamepads() {
+      if (!navigator.getGamepads) return [];
+      return Array.from(navigator.getGamepads()).filter(Boolean);
+    }
+
+    function updateGamepadStatus() {
+      const pads = connectedGamepads();
+      const base = document.getElementById("status").textContent.split(" · gamepads detected:")[0];
+      document.getElementById("status").textContent = `${base} · gamepads detected: ${pads.length}`;
     }
 
     async function fetchJson(url) {

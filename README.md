@@ -78,8 +78,15 @@ Controls:
 - Xbox controller per pane: `A`, `B`, `X`, `Y`, `LB`
 - Skip current frame: left `Q`, right `P`, or Xbox `RB`
 - Undo last saved annotation from the current session: left `Z`, right `O`, or Xbox `View/Back`
+- Favorite/bookmark the current frame: left `F`, right `L`, or Xbox `D-pad Down`
 
-The app shows the full keyboard/Xbox mapping inside each annotation pane. Undo is per annotator: if the left annotator undoes a label, it removes only that annotator's row for that image and leaves the other person's annotation untouched.
+The app shows the full keyboard/Xbox mapping inside each annotation pane. It also displays the capture time in Pacific time, using `PST` or `PDT` depending on the date, plus the stored UTC timestamp. Undo is per annotator: if the left annotator undoes a label, it removes only that annotator's row for that image and leaves the other person's annotation untouched.
+
+Favorites are stored separately from class labels in the `favorite_frame` table, so they are never used as training classes. Export them later with:
+
+```bash
+envirocam export-favorites --config configs/mount_tam.yaml
+```
 
 For two Bluetooth Xbox controllers on a MacBook, pair both controllers in macOS Bluetooth settings before opening the app. Chrome is the recommended browser because its Gamepad API support is the most reliable on macOS. The first connected controller controls the left pane; the second connected controller controls the right pane.
 
@@ -192,6 +199,8 @@ data/models/marine_layer_detection/efficientnet_b0/model.pt
 
 `predictions.csv` covers frames that were already evaluated during training. If a disagreement frame is missing from that CSV, the app uses `model.pt` to run live inference for that frame. If files live somewhere else, pass `--predictions /path/to/predictions.csv` and/or `--checkpoint /path/to/model.pt`. By default, the app reviews disagreements only. Add `--include-agreements` if you want to review every double-labeled frame. Use `--annotator` twice to focus on the two current players and ignore older test annotator names. Final decisions are stored separately from the original annotations, so you keep the audit trail.
 
+Adjudication is also gamepad-enabled: `A`, `B`, `X`, `Y`, and `LB` choose the first five labels, and `D-pad Down` favorites the current frame. Keyboard `1` through `0` still choose labels, and `F` favorites the frame.
+
 Check installed ML packages and Apple Silicon acceleration:
 
 ```bash
@@ -254,16 +263,11 @@ Supported model names:
 Recommended comparison run:
 
 ```bash
-for model in resnet18 efficientnet_b0 mobilenet_v3_small; do
-  envirocam train-image-model \
-    --config configs/mount_tam_training.yaml \
-    --epochs 8 \
-    --model-name "$model" \
-    --pretrained \
-    --device mps
-done
-
-envirocam compare-image-models --config configs/mount_tam_training.yaml
+envirocam train-compare-image-models \
+  --config configs/mount_tam_training.yaml \
+  --epochs 8 \
+  --pretrained \
+  --device mps
 ```
 
 Each model's `metadata.json` includes overall, per-label, and per-camera metrics. Each `predictions.csv` includes one row per evaluated image, with `camera_id`, true label, predicted label, confidence, and correctness. Camera comparison groups come from the task config, so this works for other sites/scenarios too.

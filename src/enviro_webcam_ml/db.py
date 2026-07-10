@@ -123,6 +123,17 @@ CREATE TABLE IF NOT EXISTS annotation_adjudication (
   UNIQUE(capture_id, task_id),
   FOREIGN KEY (capture_id) REFERENCES capture(id)
 );
+
+CREATE TABLE IF NOT EXISTS favorite_frame (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  capture_id INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  annotator TEXT,
+  notes TEXT,
+  created_at_utc TEXT NOT NULL,
+  UNIQUE(capture_id, task_id, annotator),
+  FOREIGN KEY (capture_id) REFERENCES capture(id)
+);
 """
 
 
