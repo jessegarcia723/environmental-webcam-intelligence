@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,7 @@ class AppConfig:
 
 
 def resolve_relative(base: Path, path: Path) -> Path:
+    path = Path(os.path.expandvars(os.path.expanduser(str(path))))
     if path.is_absolute():
         return path
     return (base / path).resolve()

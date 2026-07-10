@@ -19,6 +19,7 @@ from enviro_webcam_ml.capture import capture_once
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
+from enviro_webcam_ml.training_env import training_environment_report
 from enviro_webcam_ml.weather.open_meteo import fetch_forecast
 
 
@@ -125,6 +126,9 @@ def build_parser() -> argparse.ArgumentParser:
     backup.add_argument("--config", required=True)
     backup.add_argument("--output", required=True)
     backup.set_defaults(func=cmd_backup_db)
+
+    train_env = sub.add_parser("check-training-env", help="Print installed ML packages and accelerator support.")
+    train_env.set_defaults(func=cmd_check_training_env)
 
     return parser
 
@@ -339,6 +343,23 @@ def cmd_backup_db(args: argparse.Namespace) -> int:
     output_path = Path(args.output)
     backup_sqlite_database(config.database_path, output_path)
     print(f"Wrote database backup to {output_path.resolve()}")
+    return 0
+
+
+def cmd_check_training_env(args: argparse.Namespace) -> int:
+    report = training_environment_report()
+    print(f"Python: {report['python']}")
+    print(f"Platform: {report['platform']}")
+    print(f"Machine: {report['machine']}")
+    print("Packages:")
+    for name, version in report["packages"].items():
+        print(f"  {name}: {version or 'not installed'}")
+    torch = report["torch"]
+    print("Torch:")
+    print(f"  installed: {torch['installed']}")
+    print(f"  mps_available: {torch['mps_available']}")
+    print(f"  cuda_available: {torch['cuda_available']}")
+    print(f"  recommended_device: {torch['recommended_device'] or 'n/a'}")
     return 0
 
 

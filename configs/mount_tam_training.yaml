@@ -1,0 +1,90 @@
+project:
+  name: mount_tam_marine_layer
+  # Set ENVIROCAM_DATA_DIR to the synced Google Drive data folder on the
+  # training machine. Example:
+  # export ENVIROCAM_DATA_DIR="/Users/jessegarica/Library/CloudStorage/GoogleDrive-jessegarcia723@gmail.com/Other computers/My MacBook Pro/environmental-webcam-intelligence/data"
+  database_path: ${ENVIROCAM_DATA_DIR}/mount_tam.sqlite3
+  data_dir: ${ENVIROCAM_DATA_DIR}
+
+cameras:
+  - id: mount_tam_east_peak
+    name: Mount Tam East Peak
+    location:
+      latitude: 37.9235
+      longitude: -122.5965
+      elevation_m: 784
+      timezone: America/Los_Angeles
+    capture:
+      image_url: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamEast/latest-frame.jpg"
+      interval_seconds: 300
+      timeout_seconds: 20
+      user_agent: "enviro-webcam-ml/0.1 (+local research MVP)"
+    pose:
+      version: "initial"
+      description: "ALERTCalifornia Axis-TamEast latest-frame still image."
+
+  - id: mount_tam_west_peak
+    name: Mount Tam West Peak
+    location:
+      latitude: 37.9235
+      longitude: -122.5965
+      elevation_m: 784
+      timezone: America/Los_Angeles
+    capture:
+      image_url: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamWest/latest-frame.jpg"
+      interval_seconds: 300
+      timeout_seconds: 20
+      user_agent: "enviro-webcam-ml/0.1 (+local research MVP)"
+    pose:
+      version: "initial"
+      description: "ALERTCalifornia Axis-TamWest latest-frame still image."
+
+weather:
+  provider: open_meteo
+  timezone: UTC
+  fetch_interval_seconds: 7200
+  fetch_on_start: true
+  hourly_variables:
+    - temperature_2m
+    - relative_humidity_2m
+    - dew_point_2m
+    - precipitation
+    - rain
+    - cloud_cover
+    - cloud_cover_low
+    - cloud_cover_mid
+    - cloud_cover_high
+    - pressure_msl
+    - surface_pressure
+    - wind_speed_10m
+    - wind_direction_10m
+
+quality:
+  night_luminance_threshold: 35
+  blur_variance_threshold: 25
+
+collector:
+  clock_sanity:
+    enabled: true
+    max_drift_seconds: 120
+    max_backward_seconds: 1
+    retry_seconds: 60
+
+tasks:
+  - id: marine_layer_detection
+    labels:
+      - clouds_below_peak
+      - no_clouds_below_peak
+      - peak_obscured
+      - below_peak_height_far_from_peak
+      - night_unusable
+      - camera_artifact
+    positive_label: clouds_below_peak
+    negative_labels:
+      - no_clouds_below_peak
+    uncertain_labels:
+      - below_peak_height_far_from_peak
+      - night_unusable
+      - camera_artifact
+    obscured_labels:
+      - peak_obscured

@@ -26,6 +26,7 @@ envirocam run-collector --config configs/mount_tam.yaml --max-iterations 1
 envirocam build-manifest --config configs/mount_tam.yaml --output data/manifests/mount_tam_frames.csv
 envirocam annotate --config configs/mount_tam.yaml --open-browser
 envirocam analyze-annotations --config configs/mount_tam.yaml
+envirocam check-training-env
 pytest
 ```
 
@@ -130,6 +131,44 @@ envirocam backup-db \
 
 The exact Google Drive path may differ depending on how Google Drive for Desktop is installed. The key idea is: the collector writes the live DB locally, and Google Drive receives periodic backup copies.
 
+## Training setup on the M5 MacBook
+
+Use a newer Python on the M5 for training, preferably Python 3.11 or 3.12. The old collector can stay on Python 3.9; it does not need PyTorch.
+
+Clone/update the repo and install training dependencies:
+
+```bash
+cd ~/Documents/environmental-webcam-intelligence
+git pull
+
+python3.12 -m venv .venv-train
+source .venv-train/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev,train]"
+```
+
+If your Python command is `python3.11`, use that instead of `python3.12`.
+
+Point the training config at the Google Drive-synced data folder:
+
+```bash
+export ENVIROCAM_DATA_DIR="/Users/jessegarica/Library/CloudStorage/GoogleDrive-jessegarcia723@gmail.com/Other computers/My MacBook Pro/environmental-webcam-intelligence/data"
+```
+
+Verify the synced database/config can be read:
+
+```bash
+envirocam analyze-annotations --config configs/mount_tam_training.yaml
+```
+
+Check installed ML packages and Apple Silicon acceleration:
+
+```bash
+envirocam check-training-env
+```
+
+On Apple Silicon, a good result will show `torch` installed and `mps_available: True`. That means PyTorch can use Apple's Metal backend.
+
 ## Current package layout
 
 ```text
@@ -143,6 +182,7 @@ src/enviro_webcam_ml/
   dataset.py          # CSV manifest builder
   db.py               # SQLite schema and repository functions
   quality.py          # basic image quality heuristics
+  training_env.py     # ML package and accelerator environment checks
   weather/
     open_meteo.py     # Open-Meteo forecast adapter
 ```
