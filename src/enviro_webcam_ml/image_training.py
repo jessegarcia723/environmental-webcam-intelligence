@@ -55,6 +55,12 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         shuffle=True,
         num_workers=options.num_workers,
     )
+    train_eval_loader = DataLoader(
+        train_dataset,
+        batch_size=options.batch_size,
+        shuffle=False,
+        num_workers=options.num_workers,
+    )
     val_loader = DataLoader(
         val_dataset,
         batch_size=options.batch_size,
@@ -114,10 +120,25 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         if test_loader is not None
         else {"loss": None, "accuracy": None, "count": 0}
     )
+    prediction_rows = []
+    for split, loader in (
+        ("train", train_eval_loader),
+        ("val", val_loader),
+        ("test", test_loader),
+    ):
+        if loader is None:
+            continue
+        prediction_rows.extend(collect_predictions(torch, model, loader, device, labels, split))
+
+    detailed_metrics = {
+        split: classification_metrics([row for row in prediction_rows if row["split"] == split], labels)
+        for split in ("train", "val", "test")
+    }
 
     options.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = options.output_dir / "model.pt"
     metadata_path = options.output_dir / "metadata.json"
+    predictions_path = options.output_dir / "predictions.csv"
     torch.save(
         {
             "model_name": options.model_name,
@@ -134,6 +155,7 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         "output_dir": str(options.output_dir),
         "checkpoint_path": str(checkpoint_path),
         "metadata_path": str(metadata_path),
+        "predictions_path": str(predictions_path),
         "model_name": options.model_name,
         "pretrained": options.pretrained,
         "device": str(device),
@@ -145,8 +167,10 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         "split_counts": dict(sorted(split_counts.items())),
         "history": history,
         "test": test_metrics,
+        "detailed_metrics": detailed_metrics,
     }
     metadata_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    write_predictions_csv(prediction_rows, predictions_path)
     return summary
 
 
@@ -167,7 +191,7 @@ class CsvImageDataset:
         with Image.open(row["image_path"]) as image:
             image = image.convert("RGB")
             tensor = self.transform(image)
-        return tensor, self.label_to_idx[row["label"]]
+        return tensor, self.label_to_idx[row["label"]], index
 
 
 def read_training_rows(path: Path) -> list[dict[str, str]]:
@@ -186,17 +210,29 @@ def read_training_rows(path: Path) -> list[dict[str, str]]:
 
 
 def build_model(models, nn, model_name: str, num_classes: int, pretrained: bool):
-    if model_name != "resnet18":
-        raise ValueError(f"Unsupported model_name={model_name!r}; currently supported: resnet18")
-
-    if pretrained:
-        weights = models.ResNet18_Weights.DEFAULT
+    if model_name == "resnet18":
+        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
         model = models.resnet18(weights=weights)
-    else:
-        model = models.resnet18(weights=None)
-    in_features = model.fc.in_features
-    model.fc = nn.Linear(in_features, num_classes)
-    return model
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+        return model
+
+    if model_name == "efficientnet_b0":
+        weights = models.EfficientNet_B0_Weights.DEFAULT if pretrained else None
+        model = models.efficientnet_b0(weights=weights)
+        in_features = model.classifier[-1].in_features
+        model.classifier[-1] = nn.Linear(in_features, num_classes)
+        return model
+
+    if model_name == "mobilenet_v3_small":
+        weights = models.MobileNet_V3_Small_Weights.DEFAULT if pretrained else None
+        model = models.mobilenet_v3_small(weights=weights)
+        in_features = model.classifier[-1].in_features
+        model.classifier[-1] = nn.Linear(in_features, num_classes)
+        return model
+
+    supported = "resnet18, efficientnet_b0, mobilenet_v3_small"
+    raise ValueError(f"Unsupported model_name={model_name!r}; currently supported: {supported}")
 
 
 def build_transforms(transforms, image_size: int):
@@ -237,7 +273,7 @@ def run_epoch(torch, model, loader, criterion, device, *, optimizer):
     total_loss = 0.0
     correct = 0
     count = 0
-    for images, labels in loader:
+    for images, labels, _indexes in loader:
         images = images.to(device)
         labels = labels.to(device)
         optimizer.zero_grad(set_to_none=True)
@@ -258,7 +294,7 @@ def evaluate(torch, model, loader, criterion, device):
     correct = 0
     count = 0
     with torch.no_grad():
-        for images, labels in loader:
+        for images, labels, _indexes in loader:
             images = images.to(device)
             labels = labels.to(device)
             logits = model(images)
@@ -268,6 +304,121 @@ def evaluate(torch, model, loader, criterion, device):
             correct += int((torch.argmax(logits, dim=1) == labels).sum().detach().cpu())
             count += batch_count
     return metric_summary(total_loss, correct, count)
+
+
+def collect_predictions(torch, model, loader, device, labels: list[str], split: str) -> list[dict[str, Any]]:
+    model.eval()
+    rows = []
+    with torch.no_grad():
+        for images, true_indexes, row_indexes in loader:
+            images = images.to(device)
+            logits = model(images)
+            probabilities = torch.softmax(logits, dim=1).detach().cpu()
+            pred_indexes = torch.argmax(probabilities, dim=1)
+            true_indexes = true_indexes.detach().cpu()
+            row_indexes = row_indexes.detach().cpu()
+
+            for batch_index in range(len(row_indexes)):
+                source_row = loader.dataset.rows[int(row_indexes[batch_index])]
+                true_idx = int(true_indexes[batch_index])
+                pred_idx = int(pred_indexes[batch_index])
+                confidence = float(probabilities[batch_index, pred_idx])
+                rows.append(
+                    {
+                        "split": split,
+                        "capture_id": source_row.get("capture_id", ""),
+                        "camera_id": source_row.get("camera_id", ""),
+                        "captured_at_utc": source_row.get("captured_at_utc", ""),
+                        "true_label": labels[true_idx],
+                        "pred_label": labels[pred_idx],
+                        "confidence": confidence,
+                        "correct": int(true_idx == pred_idx),
+                        "image_path": source_row.get("image_path", ""),
+                    }
+                )
+    return rows
+
+
+def classification_metrics(predictions: list[dict[str, Any]], labels: list[str]) -> dict[str, Any]:
+    overall = prediction_metric_summary(predictions)
+    by_label = {
+        label: label_metrics(predictions, label)
+        for label in labels
+    }
+    camera_ids = sorted({row.get("camera_id", "") for row in predictions})
+    by_camera = {
+        camera_id or "unknown": prediction_metric_summary(
+            [row for row in predictions if row.get("camera_id", "") == camera_id]
+        )
+        for camera_id in camera_ids
+    }
+    return {
+        "overall": overall,
+        "by_label": by_label,
+        "by_camera": by_camera,
+        "confusion_matrix": confusion_matrix(predictions, labels),
+    }
+
+
+def prediction_metric_summary(predictions: list[dict[str, Any]]) -> dict[str, float | int | None]:
+    count = len(predictions)
+    if count == 0:
+        return {"accuracy": None, "count": 0}
+    correct = sum(int(row["correct"]) for row in predictions)
+    return {"accuracy": correct / count, "count": count}
+
+
+def label_metrics(predictions: list[dict[str, Any]], label: str) -> dict[str, float | int | None]:
+    true_positive = sum(1 for row in predictions if row["true_label"] == label and row["pred_label"] == label)
+    false_positive = sum(1 for row in predictions if row["true_label"] != label and row["pred_label"] == label)
+    false_negative = sum(1 for row in predictions if row["true_label"] == label and row["pred_label"] != label)
+    support = sum(1 for row in predictions if row["true_label"] == label)
+    precision_denominator = true_positive + false_positive
+    recall_denominator = true_positive + false_negative
+    precision = true_positive / precision_denominator if precision_denominator else None
+    recall = true_positive / recall_denominator if recall_denominator else None
+    if precision is None or recall is None or (precision + recall) == 0:
+        f1 = None
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "support": support,
+    }
+
+
+def confusion_matrix(predictions: list[dict[str, Any]], labels: list[str]) -> list[dict[str, Any]]:
+    rows = []
+    for true_label in labels:
+        row = {"true_label": true_label}
+        for pred_label in labels:
+            row[pred_label] = sum(
+                1
+                for prediction in predictions
+                if prediction["true_label"] == true_label and prediction["pred_label"] == pred_label
+            )
+        rows.append(row)
+    return rows
+
+
+def write_predictions_csv(predictions: list[dict[str, Any]], output_path: Path) -> None:
+    fieldnames = [
+        "split",
+        "capture_id",
+        "camera_id",
+        "captured_at_utc",
+        "true_label",
+        "pred_label",
+        "confidence",
+        "correct",
+        "image_path",
+    ]
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(predictions)
 
 
 def metric_summary(total_loss: float, correct: int, count: int) -> dict[str, float | int | None]:

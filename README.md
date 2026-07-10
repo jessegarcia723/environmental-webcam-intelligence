@@ -190,19 +190,52 @@ Train the first image-only model:
 ```bash
 envirocam train-image-model \
   --training-csv data/training/marine_layer_detection_training.csv \
-  --output-dir data/models/marine_layer_detection \
+  --output-dir data/models/marine_layer_detection/resnet18 \
   --epochs 5 \
+  --model-name resnet18 \
   --device mps
 ```
 
-This trains a ResNet-18 classifier using PyTorch. By default, `--device auto` uses `mps` on Apple Silicon when available, then CUDA, then CPU. Passing `--device mps` makes the Apple Silicon choice explicit. It writes:
+This trains an image classifier using PyTorch. By default, `--device auto` uses `mps` on Apple Silicon when available, then CUDA, then CPU. Passing `--device mps` makes the Apple Silicon choice explicit. It writes:
 
 ```text
-data/models/marine_layer_detection/model.pt
-data/models/marine_layer_detection/metadata.json
+data/models/marine_layer_detection/resnet18/model.pt
+data/models/marine_layer_detection/resnet18/metadata.json
+data/models/marine_layer_detection/resnet18/predictions.csv
 ```
 
-The first model is a baseline. With only a day or two of labels, expect it to be useful for checking the full training pipeline and spotting obvious class issues, not for final operational accuracy.
+Supported model names:
+
+- `resnet18`
+- `efficientnet_b0`
+- `mobilenet_v3_small`
+
+Recommended comparison run:
+
+```bash
+for model in resnet18 efficientnet_b0 mobilenet_v3_small; do
+  envirocam train-image-model \
+    --training-csv data/training/marine_layer_detection_training.csv \
+    --output-dir "data/models/marine_layer_detection/${model}" \
+    --epochs 8 \
+    --model-name "$model" \
+    --pretrained \
+    --device mps
+done
+
+envirocam compare-image-models --models-dir data/models/marine_layer_detection
+```
+
+Each model's `metadata.json` includes overall, per-label, and per-camera metrics. Each `predictions.csv` includes one row per evaluated image, with `camera_id`, true label, predicted label, confidence, and correctness. This lets us compare both architectures and Mount Tam east-vs-west performance.
+
+The comparison command writes:
+
+```text
+data/models/marine_layer_detection/comparison.csv
+data/models/marine_layer_detection/comparison.md
+```
+
+My current hunch: with a small dataset, a pretrained `efficientnet_b0` or `mobilenet_v3_small` will likely beat a non-pretrained `resnet18`. But we should trust the held-out test metrics, not the hunch.
 
 ## Current package layout
 
@@ -218,6 +251,7 @@ src/enviro_webcam_ml/
   db.py               # SQLite schema and repository functions
   quality.py          # basic image quality heuristics
   image_training.py   # PyTorch image classifier training
+  model_comparison.py # compare trained image-model runs
   training_dataset.py # agreed-label CSV builder for model training
   training_env.py     # ML package and accelerator environment checks
   weather/
