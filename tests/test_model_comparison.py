@@ -11,10 +11,16 @@ def test_compare_image_models_writes_ranked_outputs(tmp_path: Path) -> None:
     output_csv = models_dir / "comparison.csv"
     output_md = models_dir / "comparison.md"
 
-    rows = compare_image_models(models_dir, output_csv, output_md)
+    rows = compare_image_models(
+        models_dir,
+        output_csv,
+        output_md,
+        camera_ids=("mount_tam_east_peak", "mount_tam_west_peak"),
+    )
 
     assert rows[0]["run"] == "efficientnet_b0"
     assert rows[0]["test_accuracy"] == 0.75
+    assert rows[0]["test_camera_mount_tam_east_peak_accuracy"] == 0.75
     assert output_csv.exists()
     assert "efficientnet_b0" in output_md.read_text(encoding="utf-8")
 

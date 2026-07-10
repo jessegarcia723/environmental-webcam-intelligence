@@ -8,6 +8,10 @@ def test_load_mount_tam_config() -> None:
     assert config.project.name == "mount_tam_marine_layer"
     assert config.cameras[0].id == "mount_tam_east_peak"
     assert config.weather.provider == "open_meteo"
+    assert config.default_task_id == "marine_layer_detection"
+    assert config.task_excluded_training_labels() == ("night_unusable", "camera_artifact")
+    assert config.task_comparison_camera_ids() == ("mount_tam_east_peak", "mount_tam_west_peak")
+    assert config.task_training_csv_path().name == "marine_layer_detection_training.csv"
 
 
 def test_training_config_expands_data_dir_env_var(monkeypatch, tmp_path: Path) -> None:

@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     annotate.add_argument("--config", required=True)
     annotate.add_argument("--host", default="127.0.0.1")
     annotate.add_argument("--port", type=int, default=8000)
-    annotate.add_argument("--task-id", default="marine_layer_detection")
+    annotate.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
     annotate.add_argument("--left-annotator", default="left")
     annotate.add_argument("--right-annotator", default="right")
     annotate.add_argument("--open-browser", action="store_true")
@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analyze annotation counts, multi-rater agreement, and disagreements.",
     )
     analysis.add_argument("--config", required=True)
-    analysis.add_argument("--task-id", default="marine_layer_detection")
+    analysis.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
     analysis.add_argument("--output", default="data/reports/annotation_analysis.md")
     analysis.add_argument("--disagreements-output", default="data/reports/disagreements.csv")
     analysis.set_defaults(func=cmd_analyze_annotations)
@@ -138,8 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build a clean training CSV from agreed multi-rater annotations.",
     )
     training_set.add_argument("--config", required=True)
-    training_set.add_argument("--task-id", default="marine_layer_detection")
-    training_set.add_argument("--output", default="data/training/marine_layer_detection_training.csv")
+    training_set.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    training_set.add_argument("--output", help="Defaults to task.training_csv or data/training/<task>_training.csv.")
     training_set.add_argument(
         "--include-label",
         action="append",
@@ -149,8 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
     training_set.add_argument(
         "--exclude-label",
         action="append",
-        default=["night_unusable", "camera_artifact"],
-        help="Label to exclude. Can be passed multiple times.",
+        default=[],
+        help="Label to exclude. Can be passed multiple times. Defaults to task.excluded_training_labels.",
     )
     training_set.add_argument("--min-annotators", type=int, default=2)
     training_set.add_argument("--train-fraction", type=float, default=0.70)
@@ -164,8 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
     training_set.set_defaults(func=cmd_build_training_set)
 
     train_model = sub.add_parser("train-image-model", help="Train an image classifier from a training CSV.")
-    train_model.add_argument("--training-csv", default="data/training/marine_layer_detection_training.csv")
-    train_model.add_argument("--output-dir", default="data/models/marine_layer_detection")
+    train_model.add_argument("--config", help="Optional config used to derive task-specific default paths.")
+    train_model.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    train_model.add_argument("--training-csv", help="Defaults to task.training_csv when --config is provided.")
+    train_model.add_argument("--output-dir", help="Defaults to task.model_dir/<model-name> when --config is provided.")
     train_model.add_argument("--epochs", type=int, default=5)
     train_model.add_argument("--batch-size", type=int, default=16)
     train_model.add_argument("--learning-rate", type=float, default=0.001)
@@ -184,9 +186,11 @@ def build_parser() -> argparse.ArgumentParser:
         "compare-image-models",
         help="Compare image-model metadata across multiple training runs.",
     )
-    compare_models.add_argument("--models-dir", default="data/models/marine_layer_detection")
-    compare_models.add_argument("--output-csv", default="data/models/marine_layer_detection/comparison.csv")
-    compare_models.add_argument("--output-md", default="data/models/marine_layer_detection/comparison.md")
+    compare_models.add_argument("--config", help="Optional config used to derive task-specific default paths/cameras.")
+    compare_models.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    compare_models.add_argument("--models-dir", help="Defaults to task.model_dir when --config is provided.")
+    compare_models.add_argument("--output-csv", help="Defaults to <models-dir>/comparison.csv.")
+    compare_models.add_argument("--output-md", help="Defaults to <models-dir>/comparison.md.")
     compare_models.set_defaults(func=cmd_compare_image_models)
 
     return parser
@@ -359,12 +363,13 @@ def cmd_build_manifest(args: argparse.Namespace) -> int:
 
 def cmd_annotate(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
     serve_annotation_app(
         config,
         AnnotationServerOptions(
             host=args.host,
             port=args.port,
-            task_id=args.task_id,
+            task_id=task_id,
             left_annotator=args.left_annotator,
             right_annotator=args.right_annotator,
             open_browser=args.open_browser,
@@ -375,8 +380,9 @@ def cmd_annotate(args: argparse.Namespace) -> int:
 
 def cmd_analyze_annotations(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
     with db.connect(config.database_path) as conn:
-        analysis = analyze_annotations(conn, config=config, task_id=args.task_id)
+        analysis = analyze_annotations(conn, config=config, task_id=task_id)
 
     output_path = Path(args.output)
     disagreements_output_path = Path(args.disagreements_output)
@@ -424,15 +430,22 @@ def cmd_check_training_env(args: argparse.Namespace) -> int:
 
 def cmd_build_training_set(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    output_path = Path(args.output) if args.output else config.task_training_csv_path(task_id)
+    exclude_labels = (
+        tuple(args.exclude_label)
+        if args.exclude_label
+        else config.task_excluded_training_labels(task_id)
+    )
     with db.connect(config.database_path) as conn:
         summary = build_training_set(
             conn,
             config=config,
             options=TrainingSetOptions(
-                task_id=args.task_id,
-                output_path=Path(args.output),
+                task_id=task_id,
+                output_path=output_path,
                 include_labels=tuple(args.include_label),
-                exclude_labels=tuple(args.exclude_label),
+                exclude_labels=exclude_labels,
                 min_annotators=args.min_annotators,
                 train_fraction=args.train_fraction,
                 val_fraction=args.val_fraction,
@@ -449,10 +462,26 @@ def cmd_build_training_set(args: argparse.Namespace) -> int:
 
 
 def cmd_train_image_model(args: argparse.Namespace) -> int:
+    config = load_config(args.config) if args.config else None
+    task_id = None
+    if config is not None:
+        task_id = config.default_task_id if args.task_id is None else args.task_id
+    training_csv = (
+        Path(args.training_csv)
+        if args.training_csv
+        else config.task_training_csv_path(task_id) if config is not None
+        else Path("data/training/training.csv")
+    )
+    output_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else config.task_model_dir(task_id) / args.model_name if config is not None
+        else Path("data/models") / args.model_name
+    )
     summary = train_image_model(
         ImageTrainingOptions(
-            training_csv=Path(args.training_csv),
-            output_dir=Path(args.output_dir),
+            training_csv=training_csv,
+            output_dir=output_dir,
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
@@ -483,14 +512,27 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
 
 
 def cmd_compare_image_models(args: argparse.Namespace) -> int:
-    rows = compare_image_models(
-        Path(args.models_dir),
-        Path(args.output_csv),
-        Path(args.output_md) if args.output_md else None,
+    config = load_config(args.config) if args.config else None
+    task_id = None
+    if config is not None:
+        task_id = config.default_task_id if args.task_id is None else args.task_id
+    models_dir = (
+        Path(args.models_dir)
+        if args.models_dir
+        else config.task_model_dir(task_id) if config is not None
+        else Path("data/models")
     )
-    print(f"Wrote comparison CSV to {Path(args.output_csv).resolve()}")
-    if args.output_md:
-        print(f"Wrote comparison Markdown to {Path(args.output_md).resolve()}")
+    output_csv = Path(args.output_csv) if args.output_csv else models_dir / "comparison.csv"
+    output_md = Path(args.output_md) if args.output_md else models_dir / "comparison.md"
+    camera_ids = config.task_comparison_camera_ids(task_id) if config is not None else ()
+    rows = compare_image_models(
+        models_dir,
+        output_csv,
+        output_md,
+        camera_ids=camera_ids,
+    )
+    print(f"Wrote comparison CSV to {output_csv.resolve()}")
+    print(f"Wrote comparison Markdown to {output_md.resolve()}")
     if rows:
         best = rows[0]
         print(

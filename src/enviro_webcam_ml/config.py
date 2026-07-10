@@ -92,6 +92,52 @@ class AppConfig:
     def data_dir(self) -> Path:
         return resolve_relative(self.path.parent, self.project.data_dir)
 
+    def task(self, task_id: str | None = None) -> dict[str, Any]:
+        tasks = self.raw.get("tasks") or []
+        if not tasks:
+            raise ValueError("Config must include at least one task for this command.")
+        if task_id is None:
+            return default_task(tasks)
+        for task in tasks:
+            if task.get("id") == task_id:
+                return task
+        known = ", ".join(str(task.get("id")) for task in tasks)
+        raise ValueError(f"Unknown task_id={task_id!r}. Known tasks: {known}")
+
+    @property
+    def default_task_id(self) -> str:
+        return str(self.task().get("id"))
+
+    def task_output_slug(self, task_id: str | None = None) -> str:
+        task = self.task(task_id)
+        return str(task.get("output_slug") or task.get("id"))
+
+    def task_training_csv_path(self, task_id: str | None = None) -> Path:
+        task = self.task(task_id)
+        configured = task.get("training_csv")
+        if configured:
+            return resolve_relative(self.path.parent, Path(configured))
+        return self.data_dir / "training" / f"{self.task_output_slug(task.get('id'))}_training.csv"
+
+    def task_model_dir(self, task_id: str | None = None) -> Path:
+        task = self.task(task_id)
+        configured = task.get("model_dir")
+        if configured:
+            return resolve_relative(self.path.parent, Path(configured))
+        return self.data_dir / "models" / self.task_output_slug(task.get("id"))
+
+    def task_excluded_training_labels(self, task_id: str | None = None) -> tuple[str, ...]:
+        task = self.task(task_id)
+        return tuple(str(label) for label in task.get("excluded_training_labels", ()))
+
+    def task_comparison_camera_ids(self, task_id: str | None = None) -> tuple[str, ...]:
+        task = self.task(task_id)
+        groups = task.get("comparison_groups") or {}
+        camera_group = groups.get("camera")
+        if camera_group:
+            return tuple(str(camera_id) for camera_id in camera_group)
+        return tuple(camera.id for camera in self.cameras)
+
 
 def resolve_relative(base: Path, path: Path) -> Path:
     path = Path(os.path.expandvars(os.path.expanduser(str(path))))
@@ -151,6 +197,16 @@ def load_config(path: str | Path) -> AppConfig:
         collector=collector,
         raw=raw,
     )
+
+
+def default_task(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    defaults = [task for task in tasks if as_bool(task.get("default", False))]
+    if len(defaults) > 1:
+        ids = ", ".join(str(task.get("id")) for task in defaults)
+        raise ValueError(f"Only one task can set default: true. Defaults found: {ids}")
+    if defaults:
+        return defaults[0]
+    return tasks[0]
 
 
 def parse_camera(raw: dict[str, Any]) -> CameraConfig:

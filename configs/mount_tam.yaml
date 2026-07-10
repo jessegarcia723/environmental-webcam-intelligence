@@ -75,6 +75,10 @@ collector:
 
 tasks:
   - id: marine_layer_detection
+    default: true
+    output_slug: marine_layer_detection
+    training_csv: ../data/training/marine_layer_detection_training.csv
+    model_dir: ../data/models/marine_layer_detection
     labels:
       - clouds_below_peak
       - no_clouds_below_peak
@@ -91,3 +95,10 @@ tasks:
       - camera_artifact
     obscured_labels:
       - peak_obscured
+    excluded_training_labels:
+      - night_unusable
+      - camera_artifact
+    comparison_groups:
+      camera:
+        - mount_tam_east_peak
+        - mount_tam_west_peak

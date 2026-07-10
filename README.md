@@ -189,8 +189,7 @@ Train the first image-only model:
 
 ```bash
 envirocam train-image-model \
-  --training-csv data/training/marine_layer_detection_training.csv \
-  --output-dir data/models/marine_layer_detection/resnet18 \
+  --config configs/mount_tam_training.yaml \
   --epochs 5 \
   --model-name resnet18 \
   --device mps
@@ -215,18 +214,17 @@ Recommended comparison run:
 ```bash
 for model in resnet18 efficientnet_b0 mobilenet_v3_small; do
   envirocam train-image-model \
-    --training-csv data/training/marine_layer_detection_training.csv \
-    --output-dir "data/models/marine_layer_detection/${model}" \
+    --config configs/mount_tam_training.yaml \
     --epochs 8 \
     --model-name "$model" \
     --pretrained \
     --device mps
 done
 
-envirocam compare-image-models --models-dir data/models/marine_layer_detection
+envirocam compare-image-models --config configs/mount_tam_training.yaml
 ```
 
-Each model's `metadata.json` includes overall, per-label, and per-camera metrics. Each `predictions.csv` includes one row per evaluated image, with `camera_id`, true label, predicted label, confidence, and correctness. This lets us compare both architectures and Mount Tam east-vs-west performance.
+Each model's `metadata.json` includes overall, per-label, and per-camera metrics. Each `predictions.csv` includes one row per evaluated image, with `camera_id`, true label, predicted label, confidence, and correctness. Camera comparison groups come from the task config, so this works for other sites/scenarios too.
 
 The comparison command writes:
 
@@ -236,6 +234,40 @@ data/models/marine_layer_detection/comparison.md
 ```
 
 My current hunch: with a small dataset, a pretrained `efficientnet_b0` or `mobilenet_v3_small` will likely beat a non-pretrained `resnet18`. But we should trust the held-out test metrics, not the hunch.
+
+## Generalizing to a new geophysical scenario
+
+Scenario-specific values belong in YAML config, not framework code. A new site/task should define:
+
+- `project.name`, `database_path`, and `data_dir`
+- one or more `cameras`
+- weather provider settings
+- one or more `tasks`
+
+Task config supports:
+
+```yaml
+tasks:
+  - id: example_detection
+    default: true
+    output_slug: example_detection
+    training_csv: ../data/training/example_detection_training.csv
+    model_dir: ../data/models/example_detection
+    labels:
+      - positive
+      - negative
+      - uncertain
+      - bad_frame
+    excluded_training_labels:
+      - uncertain
+      - bad_frame
+    comparison_groups:
+      camera:
+        - camera_a
+        - camera_b
+```
+
+Most commands can then omit `--task-id` and output paths; they read defaults from the config.
 
 ## Current package layout
 
@@ -260,4 +292,4 @@ src/enviro_webcam_ml/
 
 ## What this MVP does not do yet
 
-It does not train a neural network yet. That is deliberate: the highest-leverage first step is creating trustworthy, timestamped, leakage-safe data. Once image/weather capture is stable, the next layer is annotation tooling and baseline models.
+It does not yet include image explanations, weather-feature models, deployment serving, or forecast-horizon models. The current training command is an image-only baseline.

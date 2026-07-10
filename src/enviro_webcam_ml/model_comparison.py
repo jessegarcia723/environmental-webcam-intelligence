@@ -6,9 +6,15 @@ from pathlib import Path
 from typing import Any
 
 
-def compare_image_models(models_dir: Path, output_csv: Path, output_md: Path | None = None) -> list[dict[str, Any]]:
+def compare_image_models(
+    models_dir: Path,
+    output_csv: Path,
+    output_md: Path | None = None,
+    *,
+    camera_ids: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
     metadata_files = sorted(models_dir.glob("*/metadata.json"))
-    rows = [comparison_row(path) for path in metadata_files]
+    rows = [comparison_row(path, camera_ids=camera_ids) for path in metadata_files]
     rows.sort(
         key=lambda row: (
             row["test_accuracy"] is not None,
@@ -17,13 +23,13 @@ def compare_image_models(models_dir: Path, output_csv: Path, output_md: Path | N
         ),
         reverse=True,
     )
-    write_comparison_csv(rows, output_csv)
+    write_comparison_csv(rows, output_csv, camera_ids=camera_ids)
     if output_md is not None:
-        write_comparison_markdown(rows, output_md)
+        write_comparison_markdown(rows, output_md, camera_ids=camera_ids)
     return rows
 
 
-def comparison_row(metadata_path: Path) -> dict[str, Any]:
+def comparison_row(metadata_path: Path, *, camera_ids: tuple[str, ...] = ()) -> dict[str, Any]:
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     detailed = metadata.get("detailed_metrics", {})
     val_overall = detailed.get("val", {}).get("overall", {})
@@ -31,7 +37,15 @@ def comparison_row(metadata_path: Path) -> dict[str, Any]:
     test_by_camera = detailed.get("test", {}).get("by_camera", {})
     val_by_camera = detailed.get("val", {}).get("by_camera", {})
 
-    return {
+    if not camera_ids:
+        camera_ids = tuple(
+            sorted(
+                set(val_by_camera.keys())
+                | set(test_by_camera.keys())
+            )
+        )
+
+    row = {
         "run": metadata_path.parent.name,
         "model_name": metadata.get("model_name"),
         "pretrained": metadata.get("pretrained"),
@@ -42,13 +56,14 @@ def comparison_row(metadata_path: Path) -> dict[str, Any]:
         "test_count": metadata.get("split_counts", {}).get("test", 0),
         "val_accuracy": val_overall.get("accuracy"),
         "test_accuracy": test_overall.get("accuracy"),
-        "val_east_accuracy": camera_accuracy(val_by_camera, "mount_tam_east_peak"),
-        "val_west_accuracy": camera_accuracy(val_by_camera, "mount_tam_west_peak"),
-        "test_east_accuracy": camera_accuracy(test_by_camera, "mount_tam_east_peak"),
-        "test_west_accuracy": camera_accuracy(test_by_camera, "mount_tam_west_peak"),
         "metadata_path": str(metadata_path),
         "predictions_path": metadata.get("predictions_path"),
     }
+    for camera_id in camera_ids:
+        key = safe_column_name(camera_id)
+        row[f"val_camera_{key}_accuracy"] = camera_accuracy(val_by_camera, camera_id)
+        row[f"test_camera_{key}_accuracy"] = camera_accuracy(test_by_camera, camera_id)
+    return row
 
 
 def camera_accuracy(by_camera: dict[str, Any], camera_id: str) -> float | None:
@@ -56,8 +71,23 @@ def camera_accuracy(by_camera: dict[str, Any], camera_id: str) -> float | None:
     return value
 
 
-def write_comparison_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
+def write_comparison_csv(
+    rows: list[dict[str, Any]],
+    output_path: Path,
+    *,
+    camera_ids: tuple[str, ...] = (),
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not camera_ids:
+        camera_ids = camera_ids_from_rows(rows)
+    camera_fields = [
+        field
+        for camera_id in camera_ids
+        for field in (
+            f"val_camera_{safe_column_name(camera_id)}_accuracy",
+            f"test_camera_{safe_column_name(camera_id)}_accuracy",
+        )
+    ]
     fieldnames = [
         "run",
         "model_name",
@@ -69,10 +99,7 @@ def write_comparison_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
         "test_count",
         "val_accuracy",
         "test_accuracy",
-        "val_east_accuracy",
-        "val_west_accuracy",
-        "test_east_accuracy",
-        "test_west_accuracy",
+        *camera_fields,
         "metadata_path",
         "predictions_path",
     ]
@@ -82,28 +109,37 @@ def write_comparison_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
         writer.writerows(rows)
 
 
-def write_comparison_markdown(rows: list[dict[str, Any]], output_path: Path) -> None:
+def write_comparison_markdown(
+    rows: list[dict[str, Any]],
+    output_path: Path,
+    *,
+    camera_ids: tuple[str, ...] = (),
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not camera_ids:
+        camera_ids = camera_ids_from_rows(rows)
+    camera_headers = [f"Test `{camera_id}`" for camera_id in camera_ids]
+    header = ["Run", "Model", "Pretrained", "Val accuracy", "Test accuracy", *camera_headers]
     lines = [
         "# Image model comparison",
         "",
-        "| Run | Model | Pretrained | Val accuracy | Test accuracy | Test east | Test west |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---", "---", "---:", "---:", "---:", *(["---:"] * len(camera_ids))]) + " |",
     ]
     if rows:
         for row in rows:
-            lines.append(
-                "| "
-                f"`{row['run']}` | "
-                f"`{row['model_name']}` | "
-                f"{row['pretrained']} | "
-                f"{format_metric(row['val_accuracy'])} | "
-                f"{format_metric(row['test_accuracy'])} | "
-                f"{format_metric(row['test_east_accuracy'])} | "
-                f"{format_metric(row['test_west_accuracy'])} |"
-            )
+            values = [
+                f"`{row['run']}`",
+                f"`{row['model_name']}`",
+                str(row["pretrained"]),
+                format_metric(row["val_accuracy"]),
+                format_metric(row["test_accuracy"]),
+            ]
+            for camera_id in camera_ids:
+                values.append(format_metric(row.get(f"test_camera_{safe_column_name(camera_id)}_accuracy")))
+            lines.append("| " + " | ".join(values) + " |")
     else:
-        lines.append("| No model metadata found |  |  |  |  |  |  |")
+        lines.append("| No model metadata found |  |  |  |  |")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -111,3 +147,18 @@ def format_metric(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.1%}"
+
+
+def safe_column_name(value: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in value).strip("_")
+
+
+def camera_ids_from_rows(rows: list[dict[str, Any]]) -> tuple[str, ...]:
+    camera_ids = []
+    prefix = "test_camera_"
+    suffix = "_accuracy"
+    for row in rows:
+        for key in row:
+            if key.startswith(prefix) and key.endswith(suffix):
+                camera_ids.append(key[len(prefix) : -len(suffix)])
+    return tuple(sorted(set(camera_ids)))

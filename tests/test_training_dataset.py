@@ -60,6 +60,7 @@ def test_build_training_set_uses_only_agreed_current_non_excluded_labels(tmp_pat
             options=TrainingSetOptions(
                 task_id="marine_layer_detection",
                 output_path=output,
+                exclude_labels=config.task_excluded_training_labels("marine_layer_detection"),
             ),
         )
 

@@ -11,7 +11,7 @@ from enviro_webcam_ml.annotation import task_labels
 from enviro_webcam_ml.config import AppConfig
 
 
-DEFAULT_EXCLUDED_LABELS = {"night_unusable", "camera_artifact"}
+DEFAULT_EXCLUDED_LABELS: set[str] = set()
 
 
 @dataclass(frozen=True)
