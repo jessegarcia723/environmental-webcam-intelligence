@@ -19,6 +19,7 @@ from enviro_webcam_ml.capture import capture_once
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
+from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_model
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
 from enviro_webcam_ml.weather.open_meteo import fetch_forecast
@@ -160,6 +161,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include rows even when the remapped image path does not exist.",
     )
     training_set.set_defaults(func=cmd_build_training_set)
+
+    train_model = sub.add_parser("train-image-model", help="Train an image classifier from a training CSV.")
+    train_model.add_argument("--training-csv", default="data/training/marine_layer_detection_training.csv")
+    train_model.add_argument("--output-dir", default="data/models/marine_layer_detection")
+    train_model.add_argument("--epochs", type=int, default=5)
+    train_model.add_argument("--batch-size", type=int, default=16)
+    train_model.add_argument("--learning-rate", type=float, default=0.001)
+    train_model.add_argument("--image-size", type=int, default=224)
+    train_model.add_argument("--num-workers", type=int, default=0)
+    train_model.add_argument("--model-name", default="resnet18")
+    train_model.add_argument("--pretrained", action="store_true")
+    train_model.add_argument("--device", default="auto")
+    train_model.set_defaults(func=cmd_train_image_model)
 
     return parser
 
@@ -417,6 +431,34 @@ def cmd_build_training_set(args: argparse.Namespace) -> int:
     print(f"Labels: {summary['label_counts']}")
     print(f"Splits: {summary['split_counts']}")
     print(f"Skipped: {summary['skipped']}")
+    return 0
+
+
+def cmd_train_image_model(args: argparse.Namespace) -> int:
+    summary = train_image_model(
+        ImageTrainingOptions(
+            training_csv=Path(args.training_csv),
+            output_dir=Path(args.output_dir),
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            image_size=args.image_size,
+            num_workers=args.num_workers,
+            model_name=args.model_name,
+            pretrained=args.pretrained,
+            device=args.device,
+        )
+    )
+    print(f"Wrote checkpoint to {summary['checkpoint_path']}")
+    print(f"Wrote metadata to {summary['metadata_path']}")
+    print(f"Device: {summary['device']}")
+    print(f"Labels: {summary['labels']}")
+    print(f"Splits: {summary['split_counts']}")
+    final = summary["history"][-1] if summary["history"] else None
+    if final:
+        print(f"Final train: {final['train']}")
+        print(f"Final val: {final['val']}")
+    print(f"Test: {summary['test']}")
     return 0
 
 

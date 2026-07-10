@@ -28,6 +28,7 @@ envirocam annotate --config configs/mount_tam.yaml --open-browser
 envirocam analyze-annotations --config configs/mount_tam.yaml
 envirocam check-training-env
 envirocam build-training-set --config configs/mount_tam_training.yaml
+envirocam train-image-model
 pytest
 ```
 
@@ -184,6 +185,25 @@ data/training/marine_layer_detection_training.csv
 
 The training-set builder also remaps old absolute image paths stored by the collector Mac to the configured `data_dir`, so a database synced from the old Mac can still point at images under the M5's Google Drive path.
 
+Train the first image-only model:
+
+```bash
+envirocam train-image-model \
+  --training-csv data/training/marine_layer_detection_training.csv \
+  --output-dir data/models/marine_layer_detection \
+  --epochs 5 \
+  --device mps
+```
+
+This trains a ResNet-18 classifier using PyTorch. By default, `--device auto` uses `mps` on Apple Silicon when available, then CUDA, then CPU. Passing `--device mps` makes the Apple Silicon choice explicit. It writes:
+
+```text
+data/models/marine_layer_detection/model.pt
+data/models/marine_layer_detection/metadata.json
+```
+
+The first model is a baseline. With only a day or two of labels, expect it to be useful for checking the full training pipeline and spotting obvious class issues, not for final operational accuracy.
+
 ## Current package layout
 
 ```text
@@ -197,6 +217,7 @@ src/enviro_webcam_ml/
   dataset.py          # CSV manifest builder
   db.py               # SQLite schema and repository functions
   quality.py          # basic image quality heuristics
+  image_training.py   # PyTorch image classifier training
   training_dataset.py # agreed-label CSV builder for model training
   training_env.py     # ML package and accelerator environment checks
   weather/

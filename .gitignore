@@ -13,4 +13,5 @@ data/processed/
 data/manifests/*.csv
 data/reports/
 data/training/
+data/models/
 configs/data/
