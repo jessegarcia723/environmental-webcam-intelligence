@@ -22,6 +22,9 @@ class WeatherLassoOptions:
     c: float = 1.0
     positive_threshold: float = 0.5
     class_weight: str | None = None
+    split_strategy: str = "training_csv"
+    blocked_val_fraction: float = 0.15
+    blocked_test_fraction: float = 0.15
     random_state: int = 42
 
 
@@ -38,6 +41,8 @@ def train_weather_lasso(
         raise ValueError("positive_threshold must be between 0 and 1.")
     if options.c <= 0:
         raise ValueError("--c must be greater than 0.")
+    validate_split_strategy(options.split_strategy)
+    validate_blocked_fractions(options.blocked_val_fraction, options.blocked_test_fraction)
 
     weather = weather_records_by_camera(conn)
     examples, skipped = build_weather_examples(
@@ -52,6 +57,14 @@ def train_weather_lasso(
             "No training rows could be matched to weather records. "
             "Run envirocam fetch-weather/run-collector, or increase --max-weather-age-minutes."
         )
+    if options.split_strategy == "weather-hour-blocked":
+        blocked_split_summary = assign_weather_hour_blocked_splits(
+            examples,
+            val_fraction=options.blocked_val_fraction,
+            test_fraction=options.blocked_test_fraction,
+        )
+    else:
+        blocked_split_summary = None
 
     feature_names = options.features or inferred_feature_names(examples)
     if not feature_names:
@@ -60,6 +73,8 @@ def train_weather_lasso(
     train_examples = [example for example in examples if example["split"] == "train"]
     if not train_examples:
         raise ValueError("No train rows with matched weather records.")
+    if len({example["target"] for example in train_examples}) < 2:
+        raise ValueError("Train split needs both positive and non-positive weather examples.")
 
     try:
         from sklearn.impute import SimpleImputer
@@ -144,11 +159,16 @@ def train_weather_lasso(
         "max_weather_age_minutes": options.max_weather_age_minutes,
         "c": options.c,
         "class_weight": class_weight or "none",
+        "split_strategy": options.split_strategy,
+        "blocked_val_fraction": options.blocked_val_fraction,
+        "blocked_test_fraction": options.blocked_test_fraction,
         "features": feature_names,
         "nonzero_coefficients": [row for row in coefficients if row["coefficient"] != 0.0],
         "split_counts": split_counts(examples),
         "matched_rows": len(examples),
         "skipped": skipped,
+        "blocked_split_summary": blocked_split_summary,
+        "weather_group_leakage": weather_group_leakage(examples),
         "detailed_metrics": detailed_metrics,
     }
     metadata_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -233,6 +253,7 @@ def build_weather_examples(
                 "camera_id": row["camera_id"],
                 "captured_at_utc": row["captured_at_utc"],
                 "weather_valid_at_utc": match["valid_at_utc"],
+                "weather_group": weather_group_key(row["camera_id"], match["valid_at_utc"]),
                 "weather_age_minutes": age_minutes,
                 "split": row["split"],
                 "label": row["label"],
@@ -241,6 +262,116 @@ def build_weather_examples(
             }
         )
     return examples, {key: value for key, value in skipped.items() if value}
+
+
+def assign_weather_hour_blocked_splits(
+    examples: list[dict[str, Any]],
+    *,
+    val_fraction: float,
+    test_fraction: float,
+) -> dict[str, Any]:
+    train_fraction = 1.0 - val_fraction - test_fraction
+    groups = grouped_weather_examples(examples)
+    group_rows = []
+    for key, group_examples in groups.items():
+        first = min(group_examples, key=lambda item: (item["captured_at_utc"], item["camera_id"], item["capture_id"]))
+        group_rows.append(
+            {
+                "weather_group": key,
+                "first_captured_at_utc": first["captured_at_utc"],
+                "camera_id": first["camera_id"],
+                "weather_valid_at_utc": first["weather_valid_at_utc"],
+                "target": int(any(example["target"] for example in group_examples)),
+                "row_count": len(group_examples),
+            }
+        )
+
+    split_by_group: dict[str, str] = {}
+    for target in (0, 1):
+        target_groups = [group for group in group_rows if group["target"] == target]
+        target_groups.sort(key=lambda item: (item["first_captured_at_utc"], item["camera_id"], item["weather_group"]))
+        assigned = chronological_split_names(
+            len(target_groups),
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+        )
+        for group, split in zip(target_groups, assigned):
+            split_by_group[group["weather_group"]] = split
+
+    for example in examples:
+        example["original_split"] = example["split"]
+        example["split"] = split_by_group[example["weather_group"]]
+
+    return {
+        "group_count": len(group_rows),
+        "group_split_counts": counts_by_split(
+            [{"split": split, "row_count": 1} for split in split_by_group.values()]
+        ),
+        "row_split_counts": split_counts(examples),
+        "positive_group_count": sum(1 for group in group_rows if group["target"]),
+        "non_positive_group_count": sum(1 for group in group_rows if not group["target"]),
+    }
+
+
+def grouped_weather_examples(examples: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for example in examples:
+        groups.setdefault(example["weather_group"], []).append(example)
+    return groups
+
+
+def chronological_split_names(
+    n: int,
+    *,
+    train_fraction: float,
+    val_fraction: float,
+) -> list[str]:
+    if n <= 0:
+        return []
+    train_end = int(n * train_fraction)
+    val_end = train_end + int(n * val_fraction)
+    if n >= 3:
+        train_end = max(1, min(train_end, n - 2))
+        val_end = max(train_end + 1, min(val_end, n - 1))
+    elif n == 2:
+        train_end = 1
+        val_end = 1
+    else:
+        train_end = 1
+        val_end = 1
+    return [
+        "train" if index < train_end else "val" if index < val_end else "test"
+        for index in range(n)
+    ]
+
+
+def weather_group_leakage(examples: list[dict[str, Any]]) -> dict[str, Any]:
+    groups = grouped_weather_examples(examples)
+    split_sets = {key: {example["split"] for example in group} for key, group in groups.items()}
+    train_groups = {key for key, splits in split_sets.items() if "train" in splits}
+    leakage_rows = {
+        split: sum(
+            1
+            for example in examples
+            if example["split"] == split and example["weather_group"] in train_groups
+        )
+        for split in ("val", "test")
+    }
+    leaked_groups = {
+        key: sorted(splits)
+        for key, splits in split_sets.items()
+        if len(splits) > 1
+    }
+    return {
+        "unique_weather_groups": len(groups),
+        "groups_spanning_multiple_splits": len(leaked_groups),
+        "rows_sharing_weather_group_with_train": leakage_rows,
+        "is_blocked": len(leaked_groups) == 0,
+    }
+
+
+def weather_group_key(camera_id: str, weather_valid_at_utc: str) -> str:
+    return f"{camera_id}|{weather_valid_at_utc}"
 
 
 def nearest_weather_record(records: list[dict[str, Any]], captured_at: datetime) -> dict[str, Any] | None:
@@ -298,6 +429,7 @@ def collect_weather_predictions(
                 "camera_id": example["camera_id"],
                 "captured_at_utc": example["captured_at_utc"],
                 "weather_valid_at_utc": example["weather_valid_at_utc"],
+                "weather_group": example["weather_group"],
                 "weather_age_minutes": example["weather_age_minutes"],
                 "true_label": example["label"],
                 "binary_true_label": binary_true_label,
@@ -348,6 +480,14 @@ def split_counts(examples: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def counts_by_split(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        split = item["split"]
+        counts[split] = counts.get(split, 0) + int(item.get("row_count", 1))
+    return dict(sorted(counts.items()))
+
+
 def write_weather_predictions(predictions: list[dict[str, Any]], output_path: Path) -> None:
     fieldnames = [
         "split",
@@ -355,6 +495,7 @@ def write_weather_predictions(predictions: list[dict[str, Any]], output_path: Pa
         "camera_id",
         "captured_at_utc",
         "weather_valid_at_utc",
+        "weather_group",
         "weather_age_minutes",
         "true_label",
         "binary_true_label",
@@ -373,6 +514,18 @@ def write_coefficients(rows: list[dict[str, Any]], output_path: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=["feature", "coefficient", "abs_coefficient"])
         writer.writeheader()
         writer.writerows(rows)
+
+
+def validate_split_strategy(value: str) -> None:
+    if value not in {"training_csv", "weather-hour-blocked"}:
+        raise ValueError("--split-strategy must be either 'training_csv' or 'weather-hour-blocked'.")
+
+
+def validate_blocked_fractions(val_fraction: float, test_fraction: float) -> None:
+    if val_fraction < 0 or test_fraction < 0:
+        raise ValueError("Blocked split fractions must be non-negative.")
+    if val_fraction + test_fraction >= 1:
+        raise ValueError("Blocked val/test fractions must leave some training groups.")
 
 
 def parse_datetime(value: str) -> datetime:

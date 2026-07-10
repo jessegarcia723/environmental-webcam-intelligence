@@ -350,6 +350,16 @@ envirocam train-weather-lasso \
   --c 0.25
 ```
 
+Because webcam captures can happen every few minutes while weather data is hourly, many photos can share the same `weather_valid_at_utc` record. To test whether the model generalizes to unseen weather hours, use blocked evaluation:
+
+```bash
+envirocam train-weather-lasso \
+  --config configs/mount_tam_training.yaml \
+  --split-strategy weather-hour-blocked
+```
+
+In blocked mode, every row with the same `camera_id` plus hourly weather timestamp stays together in train, validation, or test. This prevents the model from training on one photo from a weather hour and testing on another photo with identical weather features. The command prints `Weather group leakage`; in blocked mode, `is_blocked` should be `True` and `groups_spanning_multiple_splits` should be `0`.
+
 Generate Grad-CAM visual explanations for a trained image model:
 
 ```bash

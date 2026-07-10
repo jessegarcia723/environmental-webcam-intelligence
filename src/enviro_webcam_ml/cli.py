@@ -336,6 +336,24 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["none", "balanced"],
         help="Use 'balanced' to upweight the minority class.",
     )
+    weather_lasso.add_argument(
+        "--split-strategy",
+        default="training_csv",
+        choices=["training_csv", "weather-hour-blocked"],
+        help="Use training_csv splits, or block all rows sharing a camera/hourly weather record.",
+    )
+    weather_lasso.add_argument(
+        "--blocked-val-fraction",
+        type=float,
+        default=0.15,
+        help="Validation fraction for weather-hour-blocked group splitting.",
+    )
+    weather_lasso.add_argument(
+        "--blocked-test-fraction",
+        type=float,
+        default=0.15,
+        help="Test fraction for weather-hour-blocked group splitting.",
+    )
     weather_lasso.set_defaults(func=cmd_train_weather_lasso)
 
     compare_models = sub.add_parser(
@@ -896,6 +914,9 @@ def cmd_train_weather_lasso(args: argparse.Namespace) -> int:
                 c=args.c,
                 positive_threshold=args.positive_threshold,
                 class_weight=args.class_weight,
+                split_strategy=args.split_strategy,
+                blocked_val_fraction=args.blocked_val_fraction,
+                blocked_test_fraction=args.blocked_test_fraction,
             ),
         )
 
@@ -907,8 +928,12 @@ def cmd_train_weather_lasso(args: argparse.Namespace) -> int:
     print(f"Positive threshold: {summary['positive_threshold']}")
     print(f"L1 C: {summary['c']}")
     print(f"Class weight: {summary['class_weight']}")
+    print(f"Split strategy: {summary['split_strategy']}")
     print(f"Matched rows: {summary['matched_rows']}")
     print(f"Splits: {summary['split_counts']}")
+    print(f"Weather group leakage: {summary['weather_group_leakage']}")
+    if summary["blocked_split_summary"]:
+        print(f"Blocked split summary: {summary['blocked_split_summary']}")
     if summary["skipped"]:
         print(f"Skipped: {summary['skipped']}")
     print("Nonzero coefficients:")
