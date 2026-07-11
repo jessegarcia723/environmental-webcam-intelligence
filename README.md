@@ -401,6 +401,39 @@ envirocam train-image-weather-model \
   --weather-feature wind_speed_10m
 ```
 
+Or let weather LASSO select the weather features first, then train image + weather using only variables with nonzero LASSO coefficients:
+
+```bash
+envirocam train-image-weather-model \
+  --config configs/mount_tam_training.yaml \
+  --model-name resnet18 \
+  --epochs 8 \
+  --pretrained \
+  --device mps \
+  --lasso-select-weather-features
+```
+
+The intermediate LASSO artifacts are written under:
+
+```text
+data/models/marine_layer_detection/resnet18_weather/weather_lasso_feature_selection/
+```
+
+You can combine this with blocked evaluation:
+
+```bash
+envirocam train-image-weather-model \
+  --config configs/mount_tam_training.yaml \
+  --model-name resnet18 \
+  --epochs 8 \
+  --pretrained \
+  --device mps \
+  --split-strategy weather-hour-blocked \
+  --lasso-select-weather-features
+```
+
+If you pass `--weather-feature` along with `--lasso-select-weather-features`, those variables become the candidate set LASSO is allowed to choose from.
+
 The output metadata uses the same metric layout as image-only training, so `envirocam compare-image-models --config configs/mount_tam_training.yaml` can include image-only and image+weather runs in the same comparison table.
 
 Generate Grad-CAM visual explanations for a trained image model:

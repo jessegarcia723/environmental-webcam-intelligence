@@ -396,7 +396,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--weather-feature",
         action="append",
         default=[],
-        help="Weather variable to use. Can be passed multiple times. Defaults to all numeric weather variables.",
+        help=(
+            "Weather variable to use. Can be passed multiple times. Defaults to all numeric weather variables. "
+            "When --lasso-select-weather-features is enabled, these are candidate variables for LASSO."
+        ),
+    )
+    image_weather.add_argument(
+        "--lasso-select-weather-features",
+        action="store_true",
+        help="Run weather LASSO first and use only variables with nonzero coefficients in the image+weather model.",
+    )
+    image_weather.add_argument(
+        "--lasso-c",
+        type=float,
+        default=1.0,
+        help="LASSO inverse regularization strength for feature selection.",
+    )
+    image_weather.add_argument(
+        "--lasso-class-weight",
+        default="none",
+        choices=["none", "balanced"],
+        help="Class weighting for the LASSO feature-selection step.",
+    )
+    image_weather.add_argument(
+        "--lasso-output-dir",
+        help="Where to write intermediate LASSO artifacts. Defaults to <output-dir>/weather_lasso_feature_selection.",
     )
     image_weather.add_argument(
         "--max-weather-age-minutes",
@@ -1035,6 +1059,41 @@ def cmd_train_image_weather_model(args: argparse.Namespace) -> int:
     class_weights = config.task_class_weights(task_id)
     class_weights.update(parse_class_weight_args(args.class_weight))
     crop_pixels = config.task_image_crop_pixels(task_id)
+    weather_features = tuple(args.weather_feature)
+    lasso_selection_summary = None
+
+    if args.lasso_select_weather_features:
+        lasso_output_dir = (
+            Path(args.lasso_output_dir)
+            if args.lasso_output_dir
+            else output_dir / "weather_lasso_feature_selection"
+        )
+        with db.connect(config.database_path) as conn:
+            lasso_selection_summary = train_weather_lasso(
+                conn,
+                WeatherLassoOptions(
+                    training_csv=training_csv,
+                    output_dir=lasso_output_dir,
+                    positive_label=positive_label,
+                    features=weather_features,
+                    max_weather_age_minutes=args.max_weather_age_minutes,
+                    c=args.lasso_c,
+                    positive_threshold=0.5,
+                    class_weight=args.lasso_class_weight,
+                    split_strategy=args.split_strategy,
+                    blocked_val_fraction=args.blocked_val_fraction,
+                    blocked_test_fraction=args.blocked_test_fraction,
+                ),
+            )
+        weather_features = tuple(
+            row["feature"]
+            for row in lasso_selection_summary["nonzero_coefficients"]
+        )
+        if not weather_features:
+            raise ValueError(
+                "LASSO selected zero weather features. Increase --lasso-c, use --lasso-class-weight balanced, "
+                "or pass explicit --weather-feature values without --lasso-select-weather-features."
+            )
 
     with db.connect(config.database_path) as conn:
         summary = train_image_weather_model(
@@ -1054,7 +1113,7 @@ def cmd_train_image_weather_model(args: argparse.Namespace) -> int:
                 positive_label=positive_label,
                 positive_threshold=positive_threshold,
                 class_weights=class_weights,
-                weather_features=tuple(args.weather_feature),
+                weather_features=weather_features,
                 max_weather_age_minutes=args.max_weather_age_minutes,
                 split_strategy=args.split_strategy,
                 blocked_val_fraction=args.blocked_val_fraction,
@@ -1067,6 +1126,12 @@ def cmd_train_image_weather_model(args: argparse.Namespace) -> int:
 
     print_training_summary(summary)
     print(f"Model type: {summary['model_type']}")
+    if lasso_selection_summary:
+        print(f"LASSO feature-selection artifacts: {lasso_selection_summary['output_dir']}")
+        print(
+            "LASSO selected weather features: "
+            f"{list(weather_features)}"
+        )
     print(f"Weather features: {summary['weather_features']}")
     print(f"Max weather age minutes: {summary['max_weather_age_minutes']}")
     print(f"Split strategy: {summary['split_strategy']}")
