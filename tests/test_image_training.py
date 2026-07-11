@@ -5,6 +5,8 @@ import pytest
 from PIL import Image
 
 from enviro_webcam_ml import db
+from enviro_webcam_ml import cli
+from enviro_webcam_ml.cli import main
 from enviro_webcam_ml.image_training import (
     ImageTrainingOptions,
     binary_metrics,
@@ -183,6 +185,46 @@ def test_train_image_model_can_block_by_weather_hour(tmp_path: Path) -> None:
     assert {"weather_valid_at_utc", "weather_group", "weather_age_minutes"} <= set(predictions[0])
 
 
+def test_cli_train_compare_image_models_uses_real_db_connection(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "weather.sqlite3"
+    training_csv = tmp_path / "training.csv"
+    models_dir = tmp_path / "models"
+    config_path = tmp_path / "config.yaml"
+    write_minimal_training_config(config_path, db_path, tmp_path, training_csv)
+
+    calls = []
+
+    def fake_train_image_model(options, conn=None):
+        assert conn is not None
+        assert hasattr(conn, "execute")
+        calls.append((options.model_name, conn.execute("SELECT 1").fetchone()[0]))
+        return fake_training_summary(options)
+
+    def fake_compare_image_models(models_dir_arg, output_csv, output_md, *, camera_ids=()):
+        assert models_dir_arg == models_dir
+        return []
+
+    monkeypatch.setattr(cli, "train_image_model", fake_train_image_model)
+    monkeypatch.setattr(cli, "compare_image_models", fake_compare_image_models)
+
+    result = main(
+        [
+            "train-compare-image-models",
+            "--config",
+            str(config_path),
+            "--models-dir",
+            str(models_dir),
+            "--model",
+            "resnet18",
+            "--split-strategy",
+            "weather-hour-blocked",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [("resnet18", 1)]
+
+
 def write_repeated_weather_hour_training_csv(path: Path, tmp_path: Path) -> None:
     rows = []
     group_labels = [
@@ -224,6 +266,97 @@ def write_repeated_weather_hour_training_csv(path: Path, tmp_path: Path) -> None
         )
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_minimal_training_config(config_path: Path, db_path: Path, data_dir: Path, training_csv: Path) -> None:
+    config_path.write_text(
+        f"""
+project:
+  name: test
+  database_path: "{db_path}"
+  data_dir: "{data_dir}"
+cameras:
+  - id: camera
+    name: Camera
+    location:
+      latitude: 0
+      longitude: 0
+      timezone: UTC
+    capture:
+      image_url: "https://example.test/frame.jpg"
+    pose:
+      version: initial
+weather:
+  provider: open_meteo
+tasks:
+  - id: marine_layer_detection
+    default: true
+    training_csv: "{training_csv}"
+    model_dir: "{data_dir / 'models'}"
+    labels:
+      - clouds_below_peak
+      - no_clouds_below_peak
+    positive_label: clouds_below_peak
+""",
+        encoding="utf-8",
+    )
+
+
+def fake_training_summary(options: ImageTrainingOptions) -> dict:
+    return {
+        "checkpoint_path": str(options.output_dir / "model.pt"),
+        "metadata_path": str(options.output_dir / "metadata.json"),
+        "predictions_path": str(options.output_dir / "predictions.csv"),
+        "device": options.device,
+        "model_name": options.model_name,
+        "crop_pixels": None,
+        "positive_label": options.positive_label,
+        "positive_threshold": options.positive_threshold,
+        "class_weights": options.class_weights or {},
+        "split_strategy": options.split_strategy,
+        "matched_rows": 0,
+        "weather_group_leakage": {
+            "unique_weather_groups": 0,
+            "groups_spanning_multiple_splits": 0,
+            "rows_sharing_weather_group_with_train": {"val": 0, "test": 0},
+            "is_blocked": True,
+        },
+        "blocked_split_summary": None,
+        "skipped": {},
+        "labels": ["clouds_below_peak", "no_clouds_below_peak"],
+        "split_counts": {"train": 1},
+        "split_label_counts": {
+            "train": {
+                "clouds_below_peak": 1,
+                "no_clouds_below_peak": 0,
+            }
+        },
+        "history": [
+            {
+                "train": {"loss": 0.0, "accuracy": 1.0, "count": 1},
+                "val": {"loss": None, "accuracy": None, "count": 0},
+            }
+        ],
+        "test": {"loss": None, "accuracy": None, "count": 0},
+        "detailed_metrics": {
+            "test": {
+                "overall": {"accuracy": None, "count": 0},
+                "by_camera": {},
+                "binary": {
+                    "positive_label": options.positive_label,
+                    "true_positive": 0,
+                    "false_positive": 0,
+                    "true_negative": 0,
+                    "false_negative": 0,
+                    "ppv": None,
+                    "sensitivity": None,
+                    "specificity": None,
+                    "prevalence": None,
+                    "count": 0,
+                },
+            }
+        },
+    }
 
 
 def insert_weather_rows(conn, *, hours: int) -> None:

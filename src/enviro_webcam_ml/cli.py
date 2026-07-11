@@ -1001,11 +1001,7 @@ def cmd_train_compare_image_models(args: argparse.Namespace) -> int:
     class_weights.update(parse_class_weight_args(args.class_weight))
     model_names = tuple(args.model) if args.model else DEFAULT_IMAGE_MODELS
 
-    conn = None
-    if config is not None:
-        db.init_db(config.database_path)
-        conn = db.connect(config.database_path)
-    try:
+    def train_all_models(conn=None) -> None:
         for model_name in model_names:
             print(f"\n=== Training {model_name} ===")
             summary = train_image_model(
@@ -1032,9 +1028,13 @@ def cmd_train_compare_image_models(args: argparse.Namespace) -> int:
                 conn=conn,
             )
             print_training_summary(summary)
-    finally:
-        if conn is not None:
-            conn.close()
+
+    if config is not None:
+        db.init_db(config.database_path)
+        with db.connect(config.database_path) as conn:
+            train_all_models(conn=conn)
+    else:
+        train_all_models()
 
     output_csv = Path(args.output_csv) if args.output_csv else models_dir / "comparison.csv"
     output_md = Path(args.output_md) if args.output_md else models_dir / "comparison.md"
