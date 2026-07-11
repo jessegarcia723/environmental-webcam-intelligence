@@ -494,6 +494,31 @@ envirocam explain-image-model \
 
 If you specifically want true positives, add `--pred-label clouds_below_peak`. If you want missed positive cases, use `--true-label clouds_below_peak --pred-label no_clouds_below_peak`.
 
+Build paired east/west “both cameras positive” events from the existing single-image annotations:
+
+```bash
+envirocam build-paired-events \
+  --config configs/mount_tam_training.yaml \
+  --output-dir "$ENVIROCAM_DATA_DIR/reports/paired_events"
+```
+
+This keeps the single-image labels intact, pairs the configured east/west cameras by nearest timestamp, and adds an event label:
+
+- `both_cameras_clouds_below_peak`
+- `not_both_cameras_clouds_below_peak`
+
+It writes:
+
+```text
+data/reports/paired_events/paired_events.csv
+data/reports/paired_events/paired_event_summary.md
+data/reports/paired_events/paired_event_hour_histogram.csv
+data/reports/paired_events/paired_event_hour_histogram.png
+data/reports/paired_events/both_cameras_clouds_below_peak_examples/index.html
+```
+
+Use the PNG/CSV to see what local hours the paired “best moment” events happen, and open the HTML gallery to review all both-camera-positive examples side by side.
+
 ## Generalizing to a new geophysical scenario
 
 Scenario-specific values belong in YAML config, not framework code. A new site/task should define:

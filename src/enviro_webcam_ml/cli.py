@@ -32,6 +32,7 @@ from enviro_webcam_ml.image_paths import resolve_image_path
 from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_model
 from enviro_webcam_ml.image_weather_training import ImageWeatherTrainingOptions, train_image_weather_model
 from enviro_webcam_ml.model_comparison import compare_image_models
+from enviro_webcam_ml.paired_events import PairedEventOptions, build_paired_events
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
 from enviro_webcam_ml.weather_lasso import WeatherLassoOptions, train_weather_lasso
@@ -182,6 +183,41 @@ def build_parser() -> argparse.ArgumentParser:
     favorites.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
     favorites.add_argument("--output", default="data/reports/favorites.csv")
     favorites.set_defaults(func=cmd_export_favorites)
+
+    paired_events = sub.add_parser(
+        "build-paired-events",
+        help="Derive timestamp-level paired-camera events from single-image annotations.",
+    )
+    paired_events.add_argument("--config", required=True)
+    paired_events.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    paired_events.add_argument(
+        "--output-dir",
+        help="Defaults to <data_dir>/reports/paired_events.",
+    )
+    paired_events.add_argument(
+        "--camera-id",
+        action="append",
+        default=[],
+        help="Camera to pair. Pass exactly twice. Defaults to the task camera comparison group.",
+    )
+    paired_events.add_argument(
+        "--positive-label",
+        help="Single-image label that counts as positive. Defaults to task.positive_label.",
+    )
+    paired_events.add_argument("--min-annotators", type=int, default=2)
+    paired_events.add_argument(
+        "--max-pair-minutes",
+        type=float,
+        default=3.0,
+        help="Largest allowed time gap between paired camera frames.",
+    )
+    paired_events.add_argument("--thumbnail-width", type=int, default=640)
+    paired_events.add_argument(
+        "--no-crop-images",
+        action="store_true",
+        help="Do not apply the task image crop to side-by-side gallery examples.",
+    )
+    paired_events.set_defaults(func=cmd_build_paired_events)
 
     backup = sub.add_parser("backup-db", help="Write a consistent SQLite database snapshot.")
     backup.add_argument("--config", required=True)
@@ -840,6 +876,62 @@ def cmd_export_favorites(args: argparse.Namespace) -> int:
         writer.writerows(rows)
 
     print(f"Wrote {len(rows)} favorite frame(s) to {output_path.resolve()}")
+    return 0
+
+
+def cmd_build_paired_events(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    camera_ids = tuple(args.camera_id) if args.camera_id else config.task_comparison_camera_ids(task_id)
+    if len(camera_ids) != 2:
+        raise ValueError(
+            "build-paired-events needs exactly two cameras. "
+            "Pass --camera-id twice or configure comparison_groups.camera with two IDs."
+        )
+    positive_label = args.positive_label or config.task_positive_label(task_id)
+    if not positive_label:
+        raise ValueError("A positive label is required. Set task.positive_label or pass --positive-label.")
+    output_dir = Path(args.output_dir) if args.output_dir else config.data_dir / "reports" / "paired_events"
+    crop_pixels = None if args.no_crop_images else config.task_image_crop_pixels(task_id)
+    timezone_name = config.cameras[0].location.timezone if config.cameras else "UTC"
+    with db.connect(config.database_path) as conn:
+        summary = build_paired_events(
+            conn,
+            config=config,
+            options=PairedEventOptions(
+                task_id=task_id,
+                output_dir=output_dir,
+                camera_ids=(camera_ids[0], camera_ids[1]),
+                positive_label=positive_label,
+                min_annotators=args.min_annotators,
+                max_pair_minutes=args.max_pair_minutes,
+                thumbnail_width=args.thumbnail_width,
+                crop_pixels=crop_pixels,
+                timezone_name=timezone_name,
+            ),
+        )
+    print(f"Wrote paired events CSV to {summary['paths']['events_csv']}")
+    print(f"Wrote paired event summary to {summary['paths']['summary_md']}")
+    print(f"Wrote hour histogram CSV to {summary['paths']['hour_csv']}")
+    print(f"Wrote hour histogram PNG to {summary['paths']['hour_png']}")
+    print(f"Wrote positive example gallery to {summary['paths']['examples_html']}")
+    print(
+        "Summary: "
+        f"events={summary['event_count']} "
+        f"both_positive={summary['both_positive_count']} "
+        f"both_positive_rate={summary['both_positive_rate']} "
+        f"camera_ids={summary['camera_ids']}"
+    )
+    if summary["top_positive_hours"]:
+        top = ", ".join(
+            f"{row['local_hour']:02d}:00={row['both_positive_count']}"
+            for row in summary["top_positive_hours"][:5]
+        )
+        print(f"Top positive local hours: {top}")
+    if summary["skipped_frames"] or summary["skipped_pairs"]:
+        print(f"Skipped frames: {summary['skipped_frames']}")
+        print(f"Skipped pairs: {summary['skipped_pairs']}")
     return 0
 
 
