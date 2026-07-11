@@ -360,6 +360,21 @@ envirocam train-weather-lasso \
 
 In blocked mode, every row with the same `camera_id` plus hourly weather timestamp stays together in train, validation, or test. This prevents the model from training on one photo from a weather hour and testing on another photo with identical weather features. The command prints `Weather group leakage`; in blocked mode, `is_blocked` should be `True` and `groups_spanning_multiple_splits` should be `0`.
 
+You can now use the same blocked weather-hour evaluation for image-only models. This is the clean comparison against blocked image+weather runs:
+
+```bash
+envirocam train-image-model \
+  --config configs/mount_tam_training.yaml \
+  --model-name resnet18 \
+  --epochs 8 \
+  --pretrained \
+  --device mps \
+  --split-strategy weather-hour-blocked \
+  --output-dir "$ENVIROCAM_DATA_DIR/models/marine_layer_detection/resnet18_blocked"
+```
+
+The image-only model still uses only pixels as input; the weather records are used only to create leakage-safe train/val/test groups. Its `predictions.csv` includes `weather_valid_at_utc`, `weather_group`, and `weather_age_minutes` so you can audit which hourly weather groups landed in each split.
+
 Train a combined image + weather classifier:
 
 ```bash

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,9 +30,22 @@ class ImageTrainingOptions:
     positive_label: str | None = None
     positive_threshold: float | None = None
     class_weights: dict[str, float] | None = None
+    split_strategy: str = "training_csv"
+    blocked_val_fraction: float = 0.15
+    blocked_test_fraction: float = 0.15
+    max_weather_age_minutes: float = 90.0
 
 
-def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
+def train_image_model(options: ImageTrainingOptions, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    from enviro_webcam_ml.weather_lasso import (
+        assign_weather_hour_blocked_splits,
+        build_weather_examples,
+        validate_blocked_fractions,
+        validate_split_strategy,
+        weather_group_leakage,
+        weather_records_by_camera,
+    )
+
     torch, nn, optim, DataLoader, datasets, models, transforms = import_torch_stack()
 
     rows = read_training_rows(options.training_csv)
@@ -44,12 +58,63 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
     if options.positive_label and options.positive_label not in labels:
         raise ValueError(f"positive_label={options.positive_label!r} is not present in training labels: {labels}")
     validate_class_weights(options.class_weights or {}, labels)
+    validate_split_strategy(options.split_strategy)
+    validate_blocked_fractions(options.blocked_val_fraction, options.blocked_test_fraction)
+    blocked_split_summary = None
+    leakage_summary = None
+    matched_rows = None
+    skipped_weather_rows = None
+    if options.split_strategy == "weather-hour-blocked":
+        if conn is None:
+            raise ValueError("weather-hour-blocked split strategy requires a database connection.")
+        validate_weather_join_fields(rows)
+        weather_rows = weather_records_by_camera(conn)
+        examples, skipped_weather_rows = build_weather_examples(
+            rows,
+            weather_rows,
+            requested_features=(),
+            max_weather_age_minutes=options.max_weather_age_minutes,
+            positive_label=options.positive_label or labels[0],
+        )
+        rows_by_capture_id = {str(row["capture_id"]): row for row in rows}
+        rows = []
+        for example in examples:
+            source = rows_by_capture_id.get(str(example["capture_id"]))
+            if source is None:
+                continue
+            merged = dict(source)
+            merged["weather_valid_at_utc"] = example["weather_valid_at_utc"]
+            merged["weather_group"] = example["weather_group"]
+            merged["weather_age_minutes"] = example["weather_age_minutes"]
+            merged["split"] = example["split"]
+            merged["target"] = example["target"]
+            rows.append(merged)
+        if not rows:
+            raise ValueError("No image rows could be matched to weather records for blocked splitting.")
+        blocked_split_summary = assign_weather_hour_blocked_splits(
+            rows,
+            val_fraction=options.blocked_val_fraction,
+            test_fraction=options.blocked_test_fraction,
+        )
+        leakage_summary = weather_group_leakage(rows)
+        matched_rows = len(rows)
+    elif conn is not None and has_weather_join_fields(rows):
+        weather_rows = weather_records_by_camera(conn)
+        examples, skipped_weather_rows = build_weather_examples(
+            rows,
+            weather_rows,
+            requested_features=(),
+            max_weather_age_minutes=options.max_weather_age_minutes,
+            positive_label=options.positive_label or labels[0],
+        )
+        leakage_summary = weather_group_leakage(examples) if examples else None
+        matched_rows = len(examples)
 
     label_to_idx = {label: index for index, label in enumerate(labels)}
     split_counts = Counter(row["split"] for row in rows)
     split_label_counts = label_counts_by_split(rows, labels)
     if split_counts.get("train", 0) == 0:
-        raise ValueError("Training CSV has no train rows.")
+        raise ValueError("No train rows available after applying the split strategy.")
 
     torch.manual_seed(options.seed)
     device = choose_device(torch, options.device)
@@ -200,10 +265,18 @@ def train_image_model(options: ImageTrainingOptions) -> dict[str, Any]:
         "positive_label": options.positive_label,
         "positive_threshold": options.positive_threshold,
         "class_weights": options.class_weights or {},
+        "split_strategy": options.split_strategy,
+        "blocked_val_fraction": options.blocked_val_fraction,
+        "blocked_test_fraction": options.blocked_test_fraction,
+        "max_weather_age_minutes": options.max_weather_age_minutes,
         "labels": labels,
         "label_to_idx": label_to_idx,
         "split_counts": dict(sorted(split_counts.items())),
         "split_label_counts": split_label_counts,
+        "matched_rows": matched_rows,
+        "skipped": skipped_weather_rows or {},
+        "blocked_split_summary": blocked_split_summary,
+        "weather_group_leakage": leakage_summary,
         "history": history,
         "test": test_metrics,
         "detailed_metrics": detailed_metrics,
@@ -311,6 +384,27 @@ def validate_class_weights(class_weights: dict[str, float], labels: list[str]) -
             raise ValueError(f"class weight for {label!r} must be > 0.")
 
 
+def has_weather_join_fields(rows: list[dict[str, Any]]) -> bool:
+    return all(row.get("capture_id") and row.get("camera_id") and row.get("captured_at_utc") for row in rows)
+
+
+def validate_weather_join_fields(rows: list[dict[str, Any]]) -> None:
+    if has_weather_join_fields(rows):
+        return
+    missing = sorted(
+        {
+            field
+            for row in rows
+            for field in ("capture_id", "camera_id", "captured_at_utc")
+            if not row.get(field)
+        }
+    )
+    raise ValueError(
+        "weather-hour-blocked split strategy requires training CSV columns with values for: "
+        + ", ".join(missing)
+    )
+
+
 def class_weight_tensor(torch, class_weights: dict[str, float], labels: list[str], device):
     if not class_weights:
         return None
@@ -407,6 +501,9 @@ def collect_predictions(
                         "capture_id": source_row.get("capture_id", ""),
                         "camera_id": source_row.get("camera_id", ""),
                         "captured_at_utc": source_row.get("captured_at_utc", ""),
+                        "weather_valid_at_utc": source_row.get("weather_valid_at_utc", ""),
+                        "weather_group": source_row.get("weather_group", ""),
+                        "weather_age_minutes": source_row.get("weather_age_minutes", ""),
                         "true_label": labels[true_idx],
                         "pred_label": labels[pred_idx],
                         "confidence": confidence,
@@ -564,6 +661,9 @@ def write_predictions_csv(predictions: list[dict[str, Any]], output_path: Path) 
         "capture_id",
         "camera_id",
         "captured_at_utc",
+        "weather_valid_at_utc",
+        "weather_group",
+        "weather_age_minutes",
         "true_label",
         "pred_label",
         "confidence",

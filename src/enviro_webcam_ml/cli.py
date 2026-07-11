@@ -253,6 +253,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Training class weight as LABEL=WEIGHT. Can be passed multiple times.",
     )
+    train_model.add_argument(
+        "--split-strategy",
+        default="training_csv",
+        choices=["training_csv", "weather-hour-blocked"],
+        help="Use training_csv splits, or block all rows sharing a camera/hourly weather record.",
+    )
+    train_model.add_argument(
+        "--blocked-val-fraction",
+        type=float,
+        default=0.15,
+        help="Validation fraction for weather-hour-blocked group splitting.",
+    )
+    train_model.add_argument(
+        "--blocked-test-fraction",
+        type=float,
+        default=0.15,
+        help="Test fraction for weather-hour-blocked group splitting.",
+    )
+    train_model.add_argument(
+        "--max-weather-age-minutes",
+        type=float,
+        default=90.0,
+        help="Largest allowed time difference between capture and nearest hourly weather record.",
+    )
     train_model.set_defaults(func=cmd_train_image_model)
 
     train_compare = sub.add_parser(
@@ -290,6 +314,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Training class weight as LABEL=WEIGHT. Can be passed multiple times.",
+    )
+    train_compare.add_argument(
+        "--split-strategy",
+        default="training_csv",
+        choices=["training_csv", "weather-hour-blocked"],
+        help="Use training_csv splits, or block all rows sharing a camera/hourly weather record.",
+    )
+    train_compare.add_argument(
+        "--blocked-val-fraction",
+        type=float,
+        default=0.15,
+        help="Validation fraction for weather-hour-blocked group splitting.",
+    )
+    train_compare.add_argument(
+        "--blocked-test-fraction",
+        type=float,
+        default=0.15,
+        help="Test fraction for weather-hour-blocked group splitting.",
+    )
+    train_compare.add_argument(
+        "--max-weather-age-minutes",
+        type=float,
+        default=90.0,
+        help="Largest allowed time difference between capture and nearest hourly weather record.",
     )
     train_compare.add_argument("--output-csv", help="Defaults to <models-dir>/comparison.csv.")
     train_compare.add_argument("--output-md", help="Defaults to <models-dir>/comparison.md.")
@@ -889,24 +937,32 @@ def cmd_train_image_model(args: argparse.Namespace) -> int:
     )
     class_weights = config.task_class_weights(task_id) if config is not None else {}
     class_weights.update(parse_class_weight_args(args.class_weight))
-    summary = train_image_model(
-        ImageTrainingOptions(
-            training_csv=training_csv,
-            output_dir=output_dir,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            learning_rate=args.learning_rate,
-            image_size=args.image_size,
-            num_workers=args.num_workers,
-            model_name=args.model_name,
-            pretrained=args.pretrained,
-            device=args.device,
-            crop_pixels=crop_pixels,
-            positive_label=positive_label,
-            positive_threshold=positive_threshold,
-            class_weights=class_weights,
-        )
+    options = ImageTrainingOptions(
+        training_csv=training_csv,
+        output_dir=output_dir,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        image_size=args.image_size,
+        num_workers=args.num_workers,
+        model_name=args.model_name,
+        pretrained=args.pretrained,
+        device=args.device,
+        crop_pixels=crop_pixels,
+        positive_label=positive_label,
+        positive_threshold=positive_threshold,
+        class_weights=class_weights,
+        split_strategy=args.split_strategy,
+        blocked_val_fraction=args.blocked_val_fraction,
+        blocked_test_fraction=args.blocked_test_fraction,
+        max_weather_age_minutes=args.max_weather_age_minutes,
     )
+    if config is not None:
+        db.init_db(config.database_path)
+        with db.connect(config.database_path) as conn:
+            summary = train_image_model(options, conn=conn)
+    else:
+        summary = train_image_model(options)
     print_training_summary(summary)
     return 0
 
@@ -945,27 +1001,40 @@ def cmd_train_compare_image_models(args: argparse.Namespace) -> int:
     class_weights.update(parse_class_weight_args(args.class_weight))
     model_names = tuple(args.model) if args.model else DEFAULT_IMAGE_MODELS
 
-    for model_name in model_names:
-        print(f"\n=== Training {model_name} ===")
-        summary = train_image_model(
-            ImageTrainingOptions(
-                training_csv=training_csv,
-                output_dir=models_dir / model_name,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
-                image_size=args.image_size,
-                num_workers=args.num_workers,
-                model_name=model_name,
-                pretrained=args.pretrained,
-                device=args.device,
-                crop_pixels=crop_pixels,
-                positive_label=positive_label,
-                positive_threshold=positive_threshold,
-                class_weights=class_weights,
+    conn = None
+    if config is not None:
+        db.init_db(config.database_path)
+        conn = db.connect(config.database_path)
+    try:
+        for model_name in model_names:
+            print(f"\n=== Training {model_name} ===")
+            summary = train_image_model(
+                ImageTrainingOptions(
+                    training_csv=training_csv,
+                    output_dir=models_dir / model_name,
+                    epochs=args.epochs,
+                    batch_size=args.batch_size,
+                    learning_rate=args.learning_rate,
+                    image_size=args.image_size,
+                    num_workers=args.num_workers,
+                    model_name=model_name,
+                    pretrained=args.pretrained,
+                    device=args.device,
+                    crop_pixels=crop_pixels,
+                    positive_label=positive_label,
+                    positive_threshold=positive_threshold,
+                    class_weights=class_weights,
+                    split_strategy=args.split_strategy,
+                    blocked_val_fraction=args.blocked_val_fraction,
+                    blocked_test_fraction=args.blocked_test_fraction,
+                    max_weather_age_minutes=args.max_weather_age_minutes,
+                ),
+                conn=conn,
             )
-        )
-        print_training_summary(summary)
+            print_training_summary(summary)
+    finally:
+        if conn is not None:
+            conn.close()
 
     output_csv = Path(args.output_csv) if args.output_csv else models_dir / "comparison.csv"
     output_md = Path(args.output_md) if args.output_md else models_dir / "comparison.md"
@@ -1154,6 +1223,15 @@ def print_training_summary(summary: dict[str, Any]) -> None:
     print(f"Positive label: {summary['positive_label']}")
     print(f"Positive threshold: {summary['positive_threshold']}")
     print(f"Class weights: {summary['class_weights']}")
+    print(f"Split strategy: {summary.get('split_strategy', 'training_csv')}")
+    if summary.get("matched_rows") is not None:
+        print(f"Matched weather rows: {summary['matched_rows']}")
+    if summary.get("weather_group_leakage") is not None:
+        print(f"Weather group leakage: {summary['weather_group_leakage']}")
+    if summary.get("blocked_split_summary"):
+        print(f"Blocked split summary: {summary['blocked_split_summary']}")
+    if summary.get("skipped"):
+        print(f"Weather skipped: {summary['skipped']}")
     print(f"Labels: {summary['labels']}")
     print(f"Splits: {summary['split_counts']}")
     print("Split labels:")
