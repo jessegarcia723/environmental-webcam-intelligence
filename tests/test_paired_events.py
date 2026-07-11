@@ -84,6 +84,8 @@ def test_build_paired_events_writes_summary_visualization_and_gallery(tmp_path: 
     assert "both_cameras_clouds_below_peak" in events_csv
     assert "not_both_cameras_clouds_below_peak" in events_csv
     assert "Wed Jul 8, 2026 · 8:00 AM PDT" in events_csv
+    header = events_csv.splitlines()[0].split(",")
+    assert len(header) == len(set(header))
 
     gallery_html = Path(summary["paths"]["examples_html"]).read_text(encoding="utf-8")
     assert "Wed Jul 8, 2026 · 8:00 AM PDT" in gallery_html

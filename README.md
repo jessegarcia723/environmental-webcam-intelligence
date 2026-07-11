@@ -519,6 +519,25 @@ data/reports/paired_events/both_cameras_clouds_below_peak_examples/index.html
 
 Use the PNG/CSV to see what local hours the paired “best moment” events happen, and open the HTML gallery to review all both-camera-positive examples side by side.
 
+Build a higher-level study report that summarizes timing, weather-only LASSO, neural-net comparisons, image-vs-weather comparisons, and shared-vs-camera-specific model status from existing outputs:
+
+```bash
+envirocam build-study-report \
+  --config configs/mount_tam_training.yaml \
+  --output-dir "$ENVIROCAM_DATA_DIR/reports/study_report"
+```
+
+This command does not retrain anything. It reads the training CSV, paired-events CSV, and model metadata already on disk. If a comparison has not been trained yet, the report says that explicitly instead of filling in a fake answer.
+
+It writes:
+
+```text
+data/reports/study_report/study_report.md
+data/reports/study_report/study_model_comparison.csv
+data/reports/study_report/single_camera_positive_hour_histogram.csv
+data/reports/study_report/event_hour_comparison.png
+```
+
 ## Generalizing to a new geophysical scenario
 
 Scenario-specific values belong in YAML config, not framework code. A new site/task should define:

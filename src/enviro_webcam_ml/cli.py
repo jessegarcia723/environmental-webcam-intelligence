@@ -33,6 +33,7 @@ from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_mo
 from enviro_webcam_ml.image_weather_training import ImageWeatherTrainingOptions, train_image_weather_model
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.paired_events import PairedEventOptions, build_paired_events
+from enviro_webcam_ml.study_report import build_study_report
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
 from enviro_webcam_ml.weather_lasso import WeatherLassoOptions, train_weather_lasso
@@ -218,6 +219,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not apply the task image crop to side-by-side gallery examples.",
     )
     paired_events.set_defaults(func=cmd_build_paired_events)
+
+    study_report = sub.add_parser(
+        "build-study-report",
+        help="Summarize timing, weather, and model-performance findings from existing outputs.",
+    )
+    study_report.add_argument("--config", required=True)
+    study_report.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    study_report.add_argument("--output-dir", help="Defaults to <data_dir>/reports/study_report.")
+    study_report.add_argument("--training-csv", help="Defaults to task.training_csv.")
+    study_report.add_argument(
+        "--paired-events-csv",
+        help="Defaults to <data_dir>/reports/paired_events/paired_events.csv.",
+    )
+    study_report.add_argument("--models-dir", help="Defaults to task.model_dir.")
+    study_report.set_defaults(func=cmd_build_study_report)
 
     backup = sub.add_parser("backup-db", help="Write a consistent SQLite database snapshot.")
     backup.add_argument("--config", required=True)
@@ -932,6 +948,31 @@ def cmd_build_paired_events(args: argparse.Namespace) -> int:
     if summary["skipped_frames"] or summary["skipped_pairs"]:
         print(f"Skipped frames: {summary['skipped_frames']}")
         print(f"Skipped pairs: {summary['skipped_pairs']}")
+    return 0
+
+
+def cmd_build_study_report(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    output_dir = Path(args.output_dir) if args.output_dir else config.data_dir / "reports" / "study_report"
+    summary = build_study_report(
+        config=config,
+        task_id=task_id,
+        output_dir=output_dir,
+        training_csv=Path(args.training_csv) if args.training_csv else None,
+        paired_events_csv=Path(args.paired_events_csv) if args.paired_events_csv else None,
+        models_dir=Path(args.models_dir) if args.models_dir else None,
+    )
+    print(f"Wrote study report to {summary['report_path']}")
+    print(f"Wrote model comparison CSV to {summary['model_comparison_csv']}")
+    print(f"Wrote single-camera hour CSV to {summary['single_hour_csv']}")
+    print(f"Wrote hour comparison plot to {summary['hour_plot_png']}")
+    print(
+        "Summary: "
+        f"single_rows={summary['single_rows']} "
+        f"paired_rows={summary['paired_rows']} "
+        f"model_runs={summary['model_rows']}"
+    )
     return 0
 
 

@@ -295,19 +295,7 @@ def summarize_events(
 
 def write_events_csv(events: list[dict[str, Any]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    camera_fields = sorted(
-        {
-            field
-            for event in events
-            for field in event
-            if field.endswith("_capture_id")
-            or field.endswith("_captured_at_utc")
-            or field.endswith("_label")
-            or field.endswith("_label_source")
-            or field.endswith("_image_path")
-        }
-    )
-    fieldnames = [
+    core_fieldnames = [
         "event_id",
         "event_time_utc",
         "event_time_local",
@@ -319,8 +307,23 @@ def write_events_csv(events: list[dict[str, Any]], output_path: Path) -> None:
         "is_both_positive",
         "pair_delta_seconds",
         "label_pair",
-        *camera_fields,
     ]
+    camera_fields = sorted(
+        {
+            field
+            for event in events
+            for field in event
+            if field not in core_fieldnames
+            and (
+                field.endswith("_capture_id")
+                or field.endswith("_captured_at_utc")
+                or field.endswith("_label")
+                or field.endswith("_label_source")
+                or field.endswith("_image_path")
+            )
+        }
+    )
+    fieldnames = [*core_fieldnames, *camera_fields]
     with output_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
