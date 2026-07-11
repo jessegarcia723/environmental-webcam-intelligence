@@ -127,7 +127,7 @@ def model_summary_row(metadata_path: Path, metadata: dict[str, Any], *, experime
         "model_name": model_name,
         "model_type": model_type,
         "split_strategy": metadata.get("split_strategy") or "training_csv",
-        "blocked": (metadata.get("split_strategy") == "weather-hour-blocked"),
+        "blocked": ("blocked" in str(metadata.get("split_strategy") or "")),
         "test_accuracy": test_overall.get("accuracy"),
         "test_ppv": test_binary.get("ppv"),
         "test_sensitivity": test_binary.get("sensitivity"),
@@ -142,7 +142,7 @@ def model_summary_row(metadata_path: Path, metadata: dict[str, Any], *, experime
     for camera_id, metrics in test.get("by_camera", {}).items():
         row[f"test_camera_{camera_id}_accuracy"] = metrics.get("accuracy")
         row[f"test_camera_{camera_id}_count"] = metrics.get("count")
-    if "paired" in run or row["positive_label"] == "both_cameras_clouds_below_peak":
+    if metadata.get("event_scope") == "paired_event" or "paired" in run or row["positive_label"] == "both_cameras_clouds_below_peak":
         row["event_scope"] = "paired_event"
     else:
         row["event_scope"] = "single_image"
@@ -328,6 +328,7 @@ def camera_comparison_section(model_rows: list[dict[str, Any]]) -> dict[str, Any
         and row["experiment_role"] == "model"
         and row["category"] in {"image_only", "image_plus_weather", "image_plus_lasso_weather"}
         and any(key.startswith("test_camera_") for key in row)
+        and "camera_specific" not in row["relative_run"]
     ]
     separate_rows = [
         row for row in model_rows

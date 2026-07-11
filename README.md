@@ -538,6 +538,34 @@ data/reports/study_report/single_camera_positive_hour_histogram.csv
 data/reports/study_report/event_hour_comparison.png
 ```
 
+Run the full study suite to build the paired dataset, train the missing paired/camera-specific models, and regenerate the report in one step:
+
+```bash
+envirocam run-study-suite \
+  --config configs/mount_tam_training.yaml \
+  --model-name efficientnet_b0 \
+  --epochs 8 \
+  --pretrained \
+  --device mps
+```
+
+This runs:
+
+- paired east/west event dataset generation
+- paired-event weather LASSO
+- paired east+west neural-net image classifier, using an event-hour-blocked split by default
+- separate camera-specific image classifiers for each configured camera
+- final `build-study-report`
+
+If you only want to refresh part of the suite, use:
+
+```bash
+envirocam run-study-suite \
+  --config configs/mount_tam_training.yaml \
+  --skip-paired-image-model \
+  --skip-camera-specific-models
+```
+
 ## Generalizing to a new geophysical scenario
 
 Scenario-specific values belong in YAML config, not framework code. A new site/task should define:

@@ -33,6 +33,7 @@ from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_mo
 from enviro_webcam_ml.image_weather_training import ImageWeatherTrainingOptions, train_image_weather_model
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.paired_events import PairedEventOptions, build_paired_events
+from enviro_webcam_ml.study_suite import StudySuiteOptions, run_study_suite
 from enviro_webcam_ml.study_report import build_study_report
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
@@ -234,6 +235,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     study_report.add_argument("--models-dir", help="Defaults to task.model_dir.")
     study_report.set_defaults(func=cmd_build_study_report)
+
+    study_suite = sub.add_parser(
+        "run-study-suite",
+        help=(
+            "Build paired events, train missing paired/camera-specific models, "
+            "and regenerate the study report."
+        ),
+    )
+    study_suite.add_argument("--config", required=True)
+    study_suite.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    study_suite.add_argument("--model-name", default="efficientnet_b0")
+    study_suite.add_argument("--epochs", type=int, default=8)
+    study_suite.add_argument("--batch-size", type=int, default=16)
+    study_suite.add_argument("--learning-rate", type=float, default=0.001)
+    study_suite.add_argument("--image-size", type=int, default=224)
+    study_suite.add_argument("--num-workers", type=int, default=0)
+    study_suite.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
+    study_suite.add_argument("--device", default="auto")
+    study_suite.add_argument("--max-pair-minutes", type=float, default=3.0)
+    study_suite.add_argument("--max-weather-age-minutes", type=float, default=90.0)
+    study_suite.add_argument("--lasso-c", type=float, default=1.0)
+    study_suite.add_argument("--lasso-class-weight", default="none", choices=["none", "balanced"])
+    study_suite.add_argument(
+        "--paired-image-split-strategy",
+        default="event-hour-blocked",
+        choices=["event-hour-blocked", "chronological"],
+        help="How to split paired east+west image events for the paired neural net.",
+    )
+    study_suite.add_argument("--reports-dir", help="Defaults to <data_dir>/reports.")
+    study_suite.add_argument("--models-dir", help="Defaults to task.model_dir.")
+    study_suite.add_argument("--skip-paired-weather-lasso", action="store_true")
+    study_suite.add_argument("--skip-paired-image-model", action="store_true")
+    study_suite.add_argument("--skip-camera-specific-models", action="store_true")
+    study_suite.set_defaults(func=cmd_run_study_suite)
 
     backup = sub.add_parser("backup-db", help="Write a consistent SQLite database snapshot.")
     backup.add_argument("--config", required=True)
@@ -972,6 +1007,55 @@ def cmd_build_study_report(args: argparse.Namespace) -> int:
         f"single_rows={summary['single_rows']} "
         f"paired_rows={summary['paired_rows']} "
         f"model_runs={summary['model_rows']}"
+    )
+    return 0
+
+
+def cmd_run_study_suite(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    with db.connect(config.database_path) as conn:
+        summary = run_study_suite(
+            conn,
+            config=config,
+            options=StudySuiteOptions(
+                task_id=task_id,
+                model_name=args.model_name,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.learning_rate,
+                image_size=args.image_size,
+                num_workers=args.num_workers,
+                pretrained=args.pretrained,
+                device=args.device,
+                max_pair_minutes=args.max_pair_minutes,
+                max_weather_age_minutes=args.max_weather_age_minutes,
+                lasso_c=args.lasso_c,
+                lasso_class_weight=args.lasso_class_weight,
+                paired_image_split_strategy=args.paired_image_split_strategy,
+                output_reports_dir=Path(args.reports_dir) if args.reports_dir else None,
+                models_dir=Path(args.models_dir) if args.models_dir else None,
+                skip_paired_weather_lasso=args.skip_paired_weather_lasso,
+                skip_paired_image_model=args.skip_paired_image_model,
+                skip_camera_specific_models=args.skip_camera_specific_models,
+            ),
+        )
+    paired = summary["paired_events"]
+    report = summary["study_report"]
+    print(f"Wrote paired events CSV to {paired['paths']['events_csv']}")
+    if summary["paired_weather_lasso"]:
+        print(f"Wrote paired weather LASSO metadata to {summary['paired_weather_lasso']['metadata_path']}")
+    if summary["paired_image_model"]:
+        print(f"Wrote paired image model metadata to {summary['paired_image_model']['metadata_path']}")
+    if summary["camera_specific_models"]:
+        print(f"Trained camera-specific models: {len(summary['camera_specific_models'])}")
+    print(f"Wrote study report to {report['report_path']}")
+    print(
+        "Summary: "
+        f"paired_events={paired['event_count']} "
+        f"both_positive={paired['both_positive_count']} "
+        f"model_runs={report['model_rows']}"
     )
     return 0
 
