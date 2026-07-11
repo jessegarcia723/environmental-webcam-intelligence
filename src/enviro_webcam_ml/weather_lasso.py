@@ -252,6 +252,7 @@ def build_weather_examples(
                 "capture_id": row["capture_id"],
                 "camera_id": row["camera_id"],
                 "captured_at_utc": row["captured_at_utc"],
+                "image_path": row.get("image_path", ""),
                 "weather_valid_at_utc": match["valid_at_utc"],
                 "weather_group": weather_group_key(row["camera_id"], match["valid_at_utc"]),
                 "weather_age_minutes": age_minutes,

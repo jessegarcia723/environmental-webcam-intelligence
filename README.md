@@ -360,6 +360,49 @@ envirocam train-weather-lasso \
 
 In blocked mode, every row with the same `camera_id` plus hourly weather timestamp stays together in train, validation, or test. This prevents the model from training on one photo from a weather hour and testing on another photo with identical weather features. The command prints `Weather group leakage`; in blocked mode, `is_blocked` should be `True` and `groups_spanning_multiple_splits` should be `0`.
 
+Train a combined image + weather classifier:
+
+```bash
+envirocam train-image-weather-model \
+  --config configs/mount_tam_training.yaml \
+  --model-name resnet18 \
+  --epochs 8 \
+  --pretrained \
+  --device mps
+```
+
+This uses the same cropped webcam image input as `train-image-model`, joins each frame to the nearest hourly weather record, standardizes the weather variables from the training split, and fuses the CNN image embedding with a learned weather embedding before the final classifier. It writes:
+
+```text
+data/models/marine_layer_detection/resnet18_weather/model.pt
+data/models/marine_layer_detection/resnet18_weather/metadata.json
+data/models/marine_layer_detection/resnet18_weather/predictions.csv
+```
+
+Use the blocked split to ask a stricter question: “Can image + weather generalize to weather hours it did not train on?”
+
+```bash
+envirocam train-image-weather-model \
+  --config configs/mount_tam_training.yaml \
+  --model-name resnet18 \
+  --epochs 8 \
+  --pretrained \
+  --device mps \
+  --split-strategy weather-hour-blocked
+```
+
+You can restrict weather inputs if you want a simpler hypothesis test:
+
+```bash
+envirocam train-image-weather-model \
+  --config configs/mount_tam_training.yaml \
+  --weather-feature relative_humidity_2m \
+  --weather-feature dew_point_2m \
+  --weather-feature wind_speed_10m
+```
+
+The output metadata uses the same metric layout as image-only training, so `envirocam compare-image-models --config configs/mount_tam_training.yaml` can include image-only and image+weather runs in the same comparison table.
+
 Generate Grad-CAM visual explanations for a trained image model:
 
 ```bash

@@ -30,6 +30,7 @@ from enviro_webcam_ml.dataset import build_manifest
 from enviro_webcam_ml.image_explanations import ImageExplanationOptions, explain_image_model
 from enviro_webcam_ml.image_paths import resolve_image_path
 from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_model
+from enviro_webcam_ml.image_weather_training import ImageWeatherTrainingOptions, train_image_weather_model
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
@@ -355,6 +356,76 @@ def build_parser() -> argparse.ArgumentParser:
         help="Test fraction for weather-hour-blocked group splitting.",
     )
     weather_lasso.set_defaults(func=cmd_train_weather_lasso)
+
+    image_weather = sub.add_parser(
+        "train-image-weather-model",
+        help="Train a late-fusion classifier that combines webcam images and weather features.",
+    )
+    image_weather.add_argument("--config", required=True)
+    image_weather.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    image_weather.add_argument("--training-csv", help="Defaults to task.training_csv.")
+    image_weather.add_argument("--output-dir", help="Defaults to task.model_dir/<model-name>_weather.")
+    image_weather.add_argument("--epochs", type=int, default=5)
+    image_weather.add_argument("--batch-size", type=int, default=16)
+    image_weather.add_argument("--learning-rate", type=float, default=0.001)
+    image_weather.add_argument("--image-size", type=int, default=224)
+    image_weather.add_argument("--num-workers", type=int, default=0)
+    image_weather.add_argument(
+        "--model-name",
+        default="resnet18",
+        help="One of: resnet18, efficientnet_b0, mobilenet_v3_small.",
+    )
+    image_weather.add_argument("--pretrained", action="store_true")
+    image_weather.add_argument("--device", default="auto")
+    image_weather.add_argument(
+        "--positive-label",
+        help="Positive class for PPV/sensitivity/specificity. Defaults to task.positive_label.",
+    )
+    image_weather.add_argument(
+        "--positive-threshold",
+        type=float,
+        help="Optional probability threshold for predicting the positive class.",
+    )
+    image_weather.add_argument(
+        "--class-weight",
+        action="append",
+        default=[],
+        help="Training class weight as LABEL=WEIGHT. Can be passed multiple times.",
+    )
+    image_weather.add_argument(
+        "--weather-feature",
+        action="append",
+        default=[],
+        help="Weather variable to use. Can be passed multiple times. Defaults to all numeric weather variables.",
+    )
+    image_weather.add_argument(
+        "--max-weather-age-minutes",
+        type=float,
+        default=90.0,
+        help="Largest allowed time difference between capture and nearest hourly weather record.",
+    )
+    image_weather.add_argument(
+        "--split-strategy",
+        default="training_csv",
+        choices=["training_csv", "weather-hour-blocked"],
+        help="Use training_csv splits, or block all rows sharing a camera/hourly weather record.",
+    )
+    image_weather.add_argument(
+        "--blocked-val-fraction",
+        type=float,
+        default=0.15,
+        help="Validation fraction for weather-hour-blocked group splitting.",
+    )
+    image_weather.add_argument(
+        "--blocked-test-fraction",
+        type=float,
+        default=0.15,
+        help="Test fraction for weather-hour-blocked group splitting.",
+    )
+    image_weather.add_argument("--weather-hidden-dim", type=int, default=16)
+    image_weather.add_argument("--fusion-hidden-dim", type=int, default=128)
+    image_weather.add_argument("--dropout", type=float, default=0.2)
+    image_weather.set_defaults(func=cmd_train_image_weather_model)
 
     compare_models = sub.add_parser(
         "compare-image-models",
@@ -942,6 +1013,69 @@ def cmd_train_weather_lasso(args: argparse.Namespace) -> int:
     test_binary = summary["detailed_metrics"]["test"]["binary"]
     print(f"Test positive-class detail: {test_binary}")
     print(f"Test by camera: {summary['detailed_metrics']['test']['by_camera']}")
+    return 0
+
+
+def cmd_train_image_weather_model(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    training_csv = Path(args.training_csv) if args.training_csv else config.task_training_csv_path(task_id)
+    output_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else config.task_model_dir(task_id) / f"{args.model_name}_weather"
+    )
+    positive_label = args.positive_label or config.task_positive_label(task_id)
+    positive_threshold = (
+        args.positive_threshold
+        if args.positive_threshold is not None
+        else config.task_positive_threshold(task_id)
+    )
+    class_weights = config.task_class_weights(task_id)
+    class_weights.update(parse_class_weight_args(args.class_weight))
+    crop_pixels = config.task_image_crop_pixels(task_id)
+
+    with db.connect(config.database_path) as conn:
+        summary = train_image_weather_model(
+            conn,
+            ImageWeatherTrainingOptions(
+                training_csv=training_csv,
+                output_dir=output_dir,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.learning_rate,
+                image_size=args.image_size,
+                num_workers=args.num_workers,
+                model_name=args.model_name,
+                pretrained=args.pretrained,
+                device=args.device,
+                crop_pixels=crop_pixels,
+                positive_label=positive_label,
+                positive_threshold=positive_threshold,
+                class_weights=class_weights,
+                weather_features=tuple(args.weather_feature),
+                max_weather_age_minutes=args.max_weather_age_minutes,
+                split_strategy=args.split_strategy,
+                blocked_val_fraction=args.blocked_val_fraction,
+                blocked_test_fraction=args.blocked_test_fraction,
+                weather_hidden_dim=args.weather_hidden_dim,
+                fusion_hidden_dim=args.fusion_hidden_dim,
+                dropout=args.dropout,
+            ),
+        )
+
+    print_training_summary(summary)
+    print(f"Model type: {summary['model_type']}")
+    print(f"Weather features: {summary['weather_features']}")
+    print(f"Max weather age minutes: {summary['max_weather_age_minutes']}")
+    print(f"Split strategy: {summary['split_strategy']}")
+    print(f"Matched rows: {summary['matched_rows']}")
+    print(f"Weather group leakage: {summary['weather_group_leakage']}")
+    if summary["blocked_split_summary"]:
+        print(f"Blocked split summary: {summary['blocked_split_summary']}")
+    if summary["skipped"]:
+        print(f"Weather skipped: {summary['skipped']}")
     return 0
 
 
