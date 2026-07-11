@@ -198,6 +198,7 @@ def pair_labeled_frames(
                 "event_id": event_id(midpoint, row_a, row_b),
                 "event_time_utc": midpoint.isoformat(),
                 "event_time_local": local_time.isoformat(),
+                "event_time_local_label": local_time_label(local_time),
                 "local_date": local_time.date().isoformat(),
                 "local_hour": local_time.hour,
                 "local_decimal_hour": local_time.hour + local_time.minute / 60 + local_time.second / 3600,
@@ -310,6 +311,7 @@ def write_events_csv(events: list[dict[str, Any]], output_path: Path) -> None:
         "event_id",
         "event_time_utc",
         "event_time_local",
+        "event_time_local_label",
         "local_date",
         "local_hour",
         "local_decimal_hour",
@@ -416,7 +418,7 @@ def write_side_by_side_image(
                 image = crop_image(image, crop_pixels)
             panels.append(resize_to_width(image, thumbnail_width))
 
-    caption_height = 42
+    caption_height = 58
     gutter = 8
     width = sum(panel.width for panel in panels) + gutter
     height = max(panel.height for panel in panels) + caption_height
@@ -426,8 +428,9 @@ def write_side_by_side_image(
     for panel in panels:
         canvas.paste(panel, (x, 0))
         x += panel.width + gutter
-    caption = f"{event['event_time_local']}  |  {event['label_pair']}"
-    draw.text((10, max(panel.height for panel in panels) + 12), caption, fill=(20, 20, 20))
+    y = max(panel.height for panel in panels) + 10
+    draw.text((10, y), event_time_display(event), fill=(20, 20, 20))
+    draw.text((10, y + 20), event["label_pair"], fill=(80, 80, 80))
     canvas.save(output_path, quality=92)
     return output_path
 
@@ -450,6 +453,7 @@ def write_gallery_html(items: list[tuple[dict[str, Any], Path]], output_path: Pa
         ".event { margin: 0 0 28px; padding: 16px; background: white; border: 1px solid #d0d7de; border-radius: 10px; }",
         ".event img { max-width: 100%; border-radius: 8px; }",
         ".meta { color: #57606a; margin: 8px 0 0; font-size: 14px; }",
+        ".time { color: #24292f; font-weight: 700; margin: 10px 0 4px; }",
         "</style>",
         "</head>",
         "<body>",
@@ -462,9 +466,9 @@ def write_gallery_html(items: list[tuple[dict[str, Any], Path]], output_path: Pa
             [
                 '<div class="event">',
                 f'<img src="{html.escape(rel)}" alt="{html.escape(event["event_id"])}">',
+                f'<div class="time">{html.escape(event_time_display(event))}</div>',
                 (
                     '<div class="meta">'
-                    f'{html.escape(event["event_time_local"])} · '
                     f'{html.escape(event["label_pair"])} · '
                     f'delta {html.escape(str(event["pair_delta_seconds"]))} sec'
                     "</div>"
@@ -534,3 +538,14 @@ def parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def local_time_label(value: datetime) -> str:
+    hour = value.hour % 12 or 12
+    tz_name = value.tzname() or ""
+    suffix = f" {tz_name}" if tz_name else ""
+    return f"{value:%a} {value:%b} {value.day}, {value.year} · {hour}:{value:%M} {value:%p}{suffix}"
+
+
+def event_time_display(event: dict[str, Any]) -> str:
+    return str(event.get("event_time_local_label") or event.get("event_time_local") or "")
