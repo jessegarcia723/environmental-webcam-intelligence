@@ -27,6 +27,10 @@ from enviro_webcam_ml.capture import capture_camera
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
+from enviro_webcam_ml.forecast_weather_lasso import (
+    ForecastWeatherLassoOptions,
+    train_forecast_weather_lasso,
+)
 from enviro_webcam_ml.image_explanations import ImageExplanationOptions, explain_image_model
 from enviro_webcam_ml.image_paths import resolve_image_path
 from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_model
@@ -501,6 +505,94 @@ def build_parser() -> argparse.ArgumentParser:
         help="Test fraction for weather-hour-blocked group splitting.",
     )
     weather_lasso.set_defaults(func=cmd_train_weather_lasso)
+
+    forecast_weather_lasso = sub.add_parser(
+        "train-forecast-weather-lasso",
+        help=(
+            "Train a forecast-only L1 logistic-regression model: weather fetched before "
+            "an annotated image predicts whether that later image is positive."
+        ),
+    )
+    forecast_weather_lasso.add_argument("--config", required=True)
+    forecast_weather_lasso.add_argument(
+        "--task-id",
+        help="Defaults to the config task marked default: true, or the first task.",
+    )
+    forecast_weather_lasso.add_argument("--training-csv", help="Defaults to task.training_csv.")
+    forecast_weather_lasso.add_argument("--output-dir", help="Defaults to task.model_dir/forecast_weather_lasso_<horizon>h.")
+    forecast_weather_lasso.add_argument(
+        "--positive-label",
+        help="Positive class to predict. Defaults to task.positive_label.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--feature",
+        action="append",
+        default=[],
+        help=(
+            "Weather variable to use. Can be passed multiple times. "
+            "Defaults to config weather.hourly_variables."
+        ),
+    )
+    forecast_weather_lasso.add_argument(
+        "--forecast-horizon-hours",
+        type=float,
+        default=3.0,
+        help="Desired forecast lead time. Example: 3 means use weather fetched about 3 hours before the image hour.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--horizon-tolerance-minutes",
+        type=float,
+        default=75.0,
+        help="Allowed mismatch from --forecast-horizon-hours.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--max-weather-age-minutes",
+        type=float,
+        default=90.0,
+        help="Largest allowed time difference between the image capture and forecast valid hour.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--allow-missing-features",
+        action="store_true",
+        help="Allow rows with missing requested weather features and let the model impute them.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--c",
+        type=float,
+        default=1.0,
+        help="Inverse L1 regularization strength. Smaller values make more coefficients exactly zero.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--positive-threshold",
+        type=float,
+        default=0.5,
+        help="Probability threshold for predicting the positive class.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--class-weight",
+        default="none",
+        choices=["none", "balanced"],
+        help="Use 'balanced' to upweight the minority class.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--split-strategy",
+        default="forecast-issue-blocked",
+        choices=["training_csv", "forecast-issue-blocked"],
+        help="Use training_csv splits, or block all rows sharing the same camera/valid/fetched forecast issue.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--blocked-val-fraction",
+        type=float,
+        default=0.15,
+        help="Validation fraction for forecast-issue-blocked group splitting.",
+    )
+    forecast_weather_lasso.add_argument(
+        "--blocked-test-fraction",
+        type=float,
+        default=0.15,
+        help="Test fraction for forecast-issue-blocked group splitting.",
+    )
+    forecast_weather_lasso.set_defaults(func=cmd_train_forecast_weather_lasso)
 
     image_weather = sub.add_parser(
         "train-image-weather-model",
@@ -1340,6 +1432,76 @@ def cmd_train_weather_lasso(args: argparse.Namespace) -> int:
     print(f"Matched rows: {summary['matched_rows']}")
     print(f"Splits: {summary['split_counts']}")
     print(f"Weather group leakage: {summary['weather_group_leakage']}")
+    if summary["blocked_split_summary"]:
+        print(f"Blocked split summary: {summary['blocked_split_summary']}")
+    if summary["skipped"]:
+        print(f"Skipped: {summary['skipped']}")
+    print("Nonzero coefficients:")
+    for row in summary["nonzero_coefficients"]:
+        print(f"  {row['feature']}: {row['coefficient']:.6g}")
+    test_binary = summary["detailed_metrics"]["test"]["binary"]
+    print(f"Test positive-class detail: {test_binary}")
+    print(f"Test by camera: {summary['detailed_metrics']['test']['by_camera']}")
+    return 0
+
+
+def cmd_train_forecast_weather_lasso(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    training_csv = Path(args.training_csv) if args.training_csv else config.task_training_csv_path(task_id)
+    horizon_slug = f"{args.forecast_horizon_hours:g}h".replace(".", "p")
+    output_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else config.task_model_dir(task_id) / f"forecast_weather_lasso_{horizon_slug}"
+    )
+    positive_label = args.positive_label or config.task_positive_label(task_id)
+    if not positive_label:
+        raise ValueError("A positive label is required. Set task.positive_label or pass --positive-label.")
+    features = tuple(args.feature) if args.feature else config.weather.hourly_variables
+    if not features:
+        raise ValueError(
+            "Forecast weather training needs an explicit feature list. "
+            "Set weather.hourly_variables in the config or pass --feature multiple times."
+        )
+
+    with db.connect(config.database_path) as conn:
+        summary = train_forecast_weather_lasso(
+            conn,
+            ForecastWeatherLassoOptions(
+                training_csv=training_csv,
+                output_dir=output_dir,
+                positive_label=positive_label,
+                features=features,
+                forecast_horizon_hours=args.forecast_horizon_hours,
+                horizon_tolerance_minutes=args.horizon_tolerance_minutes,
+                max_weather_age_minutes=args.max_weather_age_minutes,
+                require_all_features=not args.allow_missing_features,
+                c=args.c,
+                positive_threshold=args.positive_threshold,
+                class_weight=args.class_weight,
+                split_strategy=args.split_strategy,
+                blocked_val_fraction=args.blocked_val_fraction,
+                blocked_test_fraction=args.blocked_test_fraction,
+            ),
+        )
+
+    print(f"Wrote forecast weather model to {summary['model_path']}")
+    print(f"Wrote metadata to {summary['metadata_path']}")
+    print(f"Wrote predictions to {summary['predictions_path']}")
+    print(f"Wrote coefficients to {summary['coefficients_path']}")
+    print(f"Positive label: {summary['positive_label']}")
+    print(f"Forecast horizon hours: {summary['forecast_horizon_hours']}")
+    print(f"Horizon tolerance minutes: {summary['horizon_tolerance_minutes']}")
+    print(f"Required features: {len(summary['features'])}")
+    print(f"Require all features: {summary['require_all_features']}")
+    print(f"Split strategy: {summary['split_strategy']}")
+    print(f"Matched rows: {summary['matched_rows']}")
+    print(f"Splits: {summary['split_counts']}")
+    print(f"Weather DB sanity: {summary['weather_sanity']}")
+    print(f"Matched row sanity: {summary['matched_sanity']}")
+    print(f"Forecast group leakage: {summary['forecast_group_leakage']}")
     if summary["blocked_split_summary"]:
         print(f"Blocked split summary: {summary['blocked_split_summary']}")
     if summary["skipped"]:

@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS weather_record (
   camera_id TEXT NOT NULL,
   valid_at_utc TEXT NOT NULL,
   fetched_at_utc TEXT NOT NULL,
+  forecast_lead_hours REAL,
+  is_forecast INTEGER,
   variables_json TEXT NOT NULL,
   FOREIGN KEY (camera_id) REFERENCES camera(id)
 );
@@ -157,6 +159,40 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
 def init_db(db_path: str | Path) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        migrate_schema(conn)
+
+
+def migrate_schema(conn: sqlite3.Connection) -> None:
+    """Apply small additive migrations for databases created by earlier versions."""
+    weather_columns = table_columns(conn, "weather_record")
+    if "forecast_lead_hours" not in weather_columns:
+        conn.execute("ALTER TABLE weather_record ADD COLUMN forecast_lead_hours REAL")
+    if "is_forecast" not in weather_columns:
+        conn.execute("ALTER TABLE weather_record ADD COLUMN is_forecast INTEGER")
+    conn.execute(
+        """
+        UPDATE weather_record
+        SET forecast_lead_hours = (
+              strftime('%s', valid_at_utc) - strftime('%s', fetched_at_utc)
+            ) / 3600.0,
+            is_forecast = CASE
+              WHEN strftime('%s', valid_at_utc) > strftime('%s', fetched_at_utc) THEN 1
+              ELSE 0
+            END
+        WHERE forecast_lead_hours IS NULL
+           OR is_forecast IS NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_weather_forecast_lookup
+        ON weather_record(camera_id, valid_at_utc, forecast_lead_hours)
+        """
+    )
+
+
+def table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
 def register_config(conn: sqlite3.Connection, config: AppConfig) -> None:
@@ -359,6 +395,8 @@ def insert_weather_records(
             camera_id,
             record["valid_at_utc"],
             fetched_at_utc,
+            weather_forecast_lead_hours(record["valid_at_utc"], fetched_at_utc),
+            int(weather_forecast_lead_hours(record["valid_at_utc"], fetched_at_utc) > 0),
             json.dumps(record["variables"], sort_keys=True),
         )
         for record in records
@@ -366,13 +404,20 @@ def insert_weather_records(
     conn.executemany(
         """
         INSERT INTO weather_record (
-          provider, camera_id, valid_at_utc, fetched_at_utc, variables_json
+          provider, camera_id, valid_at_utc, fetched_at_utc,
+          forecast_lead_hours, is_forecast, variables_json
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
     return len(rows)
+
+
+def weather_forecast_lead_hours(valid_at_utc: str, fetched_at_utc: str) -> float:
+    valid_at = datetime.fromisoformat(valid_at_utc.replace("Z", "+00:00"))
+    fetched_at = datetime.fromisoformat(fetched_at_utc.replace("Z", "+00:00"))
+    return (valid_at - fetched_at).total_seconds() / 3600.0
 
 
 def to_jsonable(value: Any) -> Any:
