@@ -37,7 +37,12 @@ from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_mo
 from enviro_webcam_ml.image_weather_training import ImageWeatherTrainingOptions, train_image_weather_model
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.paired_events import PairedEventOptions, build_paired_events
-from enviro_webcam_ml.study_suite import DEFAULT_WEATHER_MODELS, StudySuiteOptions, run_study_suite
+from enviro_webcam_ml.study_suite import (
+    DEFAULT_FORECAST_HORIZONS_HOURS,
+    DEFAULT_WEATHER_MODELS,
+    StudySuiteOptions,
+    run_study_suite,
+)
 from enviro_webcam_ml.study_report import build_study_report
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
@@ -327,6 +332,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     study_suite.add_argument(
+        "--forecast-horizon-hours",
+        action="append",
+        type=float,
+        help=(
+            "Forecast horizon to train/evaluate. Can be passed multiple times. "
+            "Defaults to: "
+            + ", ".join(f"{value:g}" for value in DEFAULT_FORECAST_HORIZONS_HOURS)
+            + "."
+        ),
+    )
+    study_suite.add_argument(
+        "--forecast-horizon-tolerance-minutes",
+        type=float,
+        default=300.0,
+        help="Allowed mismatch around each forecast horizon for archived/run-cadence forecasts.",
+    )
+    study_suite.add_argument(
         "--paired-image-split-strategy",
         default="event-hour-blocked",
         choices=["event-hour-blocked", "chronological"],
@@ -335,6 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     study_suite.add_argument("--reports-dir", help="Defaults to <data_dir>/reports.")
     study_suite.add_argument("--models-dir", help="Defaults to task.model_dir.")
     study_suite.add_argument("--skip-weather-only-models", action="store_true")
+    study_suite.add_argument("--skip-forecast-weather-models", action="store_true")
     study_suite.add_argument("--skip-paired-weather-lasso", action="store_true")
     study_suite.add_argument("--skip-paired-image-model", action="store_true")
     study_suite.add_argument("--skip-camera-specific-models", action="store_true")
@@ -1352,10 +1375,13 @@ def cmd_run_study_suite(args: argparse.Namespace) -> int:
                 lasso_c=args.lasso_c,
                 lasso_class_weight=args.lasso_class_weight,
                 weather_models=tuple(args.weather_model or DEFAULT_WEATHER_MODELS),
+                forecast_horizons_hours=tuple(args.forecast_horizon_hours or DEFAULT_FORECAST_HORIZONS_HOURS),
+                forecast_horizon_tolerance_minutes=args.forecast_horizon_tolerance_minutes,
                 paired_image_split_strategy=args.paired_image_split_strategy,
                 output_reports_dir=Path(args.reports_dir) if args.reports_dir else None,
                 models_dir=Path(args.models_dir) if args.models_dir else None,
                 skip_weather_only_models=args.skip_weather_only_models,
+                skip_forecast_weather_models=args.skip_forecast_weather_models,
                 skip_paired_weather_lasso=args.skip_paired_weather_lasso,
                 skip_paired_image_model=args.skip_paired_image_model,
                 skip_camera_specific_models=args.skip_camera_specific_models,
@@ -1368,6 +1394,16 @@ def cmd_run_study_suite(args: argparse.Namespace) -> int:
         print(f"Wrote paired weather LASSO metadata to {summary['paired_weather_lasso']['metadata_path']}")
     if summary["weather_only_models"]:
         print(f"Trained weather-only models: {len(summary['weather_only_models'])}")
+    if summary["forecast_weather_models"]:
+        print(f"Trained forecast weather models: {len(summary['forecast_weather_models'])}")
+    if summary["skipped_forecast_weather_models"]:
+        print("Skipped forecast weather models:")
+        for skipped in summary["skipped_forecast_weather_models"]:
+            print(
+                "  "
+                f"horizon={skipped['forecast_horizon_hours']:g}h "
+                f"reason={skipped['reason']}"
+            )
     if summary["paired_image_model"]:
         print(f"Wrote paired image model metadata to {summary['paired_image_model']['metadata_path']}")
     if summary["camera_specific_models"]:

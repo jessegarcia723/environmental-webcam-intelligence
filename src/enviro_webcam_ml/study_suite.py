@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from enviro_webcam_ml.config import AppConfig
+from enviro_webcam_ml.forecast_weather_lasso import (
+    ForecastWeatherLassoOptions,
+    train_forecast_weather_lasso,
+)
 from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_model
 from enviro_webcam_ml.paired_events import PairedEventOptions, build_paired_events
 from enviro_webcam_ml.paired_image_training import PairedImageTrainingOptions, train_paired_image_model
@@ -23,6 +27,7 @@ from enviro_webcam_ml.weather_lasso import WeatherLassoOptions, train_weather_la
 
 
 DEFAULT_WEATHER_MODELS = ("lasso", *SUPPORTED_WEATHER_CLASSIFIERS)
+DEFAULT_FORECAST_HORIZONS_HOURS = (3.0, 6.0)
 
 
 @dataclass(frozen=True)
@@ -41,10 +46,13 @@ class StudySuiteOptions:
     lasso_c: float = 1.0
     lasso_class_weight: str = "none"
     weather_models: tuple[str, ...] = DEFAULT_WEATHER_MODELS
+    forecast_horizons_hours: tuple[float, ...] = DEFAULT_FORECAST_HORIZONS_HOURS
+    forecast_horizon_tolerance_minutes: float = 300.0
     paired_image_split_strategy: str = "event-hour-blocked"
     output_reports_dir: Path | None = None
     models_dir: Path | None = None
     skip_weather_only_models: bool = False
+    skip_forecast_weather_models: bool = False
     skip_paired_weather_lasso: bool = False
     skip_paired_image_model: bool = False
     skip_camera_specific_models: bool = False
@@ -111,6 +119,21 @@ def run_study_suite(
         )
 
     paired_image_summary = None
+    forecast_weather_summaries = []
+    skipped_forecast_weather_models = []
+    if not options.skip_forecast_weather_models:
+        forecast_weather_summaries, skipped_forecast_weather_models = train_study_forecast_weather_models(
+            conn,
+            config=config,
+            task_id=task_id,
+            models_dir=models_dir,
+            positive_label=positive_label,
+            forecast_horizons_hours=options.forecast_horizons_hours,
+            forecast_horizon_tolerance_minutes=options.forecast_horizon_tolerance_minutes,
+            lasso_c=options.lasso_c,
+            lasso_class_weight=options.lasso_class_weight,
+        )
+
     if not options.skip_paired_image_model:
         paired_image_summary = train_paired_image_model(
             PairedImageTrainingOptions(
@@ -162,6 +185,8 @@ def run_study_suite(
         "paired_events": paired_summary,
         "paired_weather_lasso": paired_weather_summary,
         "weather_only_models": weather_only_summaries,
+        "forecast_weather_models": forecast_weather_summaries,
+        "skipped_forecast_weather_models": skipped_forecast_weather_models,
         "paired_image_model": paired_image_summary,
         "camera_specific_models": camera_specific_summaries,
         "study_report": report_summary,
@@ -248,6 +273,55 @@ def train_study_weather_only_models(
             )
         )
     return summaries
+
+
+def train_study_forecast_weather_models(
+    conn: sqlite3.Connection,
+    *,
+    config: AppConfig,
+    task_id: str,
+    models_dir: Path,
+    positive_label: str,
+    forecast_horizons_hours: tuple[float, ...],
+    forecast_horizon_tolerance_minutes: float,
+    lasso_c: float,
+    lasso_class_weight: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    summaries = []
+    skipped = []
+    training_csv = config.task_training_csv_path(task_id)
+    for horizon_hours in forecast_horizons_hours:
+        output_dir = models_dir / f"forecast_weather_lasso_{horizon_slug(horizon_hours)}"
+        try:
+            summaries.append(
+                train_forecast_weather_lasso(
+                    conn,
+                    ForecastWeatherLassoOptions(
+                        training_csv=training_csv,
+                        output_dir=output_dir,
+                        positive_label=positive_label,
+                        forecast_horizon_hours=horizon_hours,
+                        horizon_tolerance_minutes=forecast_horizon_tolerance_minutes,
+                        c=lasso_c,
+                        class_weight=lasso_class_weight,
+                        split_strategy="forecast-issue-blocked",
+                    ),
+                )
+            )
+        except ValueError as exc:
+            skipped.append(
+                {
+                    "model": "forecast_weather_lasso",
+                    "forecast_horizon_hours": horizon_hours,
+                    "output_dir": str(output_dir),
+                    "reason": str(exc),
+                }
+            )
+    return summaries, skipped
+
+
+def horizon_slug(horizon_hours: float) -> str:
+    return f"{horizon_hours:g}h".replace(".", "p")
 
 
 def validate_weather_models(weather_models: tuple[str, ...]) -> None:

@@ -27,6 +27,7 @@ def test_build_study_report_summarizes_existing_outputs_and_missing_experiments(
         specificity=0.97,
     )
     write_weather_lasso_metadata(models_dir / "weather_lasso_blocked" / "metadata.json")
+    write_forecast_weather_lasso_metadata(models_dir / "forecast_weather_lasso_3h" / "metadata.json")
 
     summary = build_study_report(
         config=load_config(config_path),
@@ -37,10 +38,16 @@ def test_build_study_report_summarizes_existing_outputs_and_missing_experiments(
     report = Path(summary["report_path"]).read_text(encoding="utf-8")
     assert "Best times for single-camera and paired events" in report
     assert "Weather-only predictors and performance" in report
+    assert "Forecast backtest" in report
     assert "PPV frac" in report
+    assert "Horizon" in report
+    assert "Features" in report
     assert "7/10" in report
     assert "efficientnet_b0" in report
     assert "weather_lasso" in report
+    assert "forecast_weather_lasso" in report
+    assert "3h" in report
+    assert "17" in report
     assert "No paired-image neural-network runs were found yet" in report
     assert "No separate camera-specific model runs were found" in report
     assert Path(summary["model_comparison_csv"]).exists()
@@ -209,6 +216,40 @@ def write_weather_lasso_metadata(path: Path) -> None:
                     "ppv": 0.7,
                     "sensitivity": 1.0,
                     "specificity": 0.75,
+                    "positive_label": "clouds_below_peak",
+                },
+                "by_camera": {},
+            }
+        },
+    }
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def write_forecast_weather_lasso_metadata(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "model_name": "forecast_weather_lasso_logistic",
+        "model_type": "forecast_weather_lasso",
+        "event_scope": "single_image",
+        "split_strategy": "forecast-issue-blocked",
+        "positive_label": "clouds_below_peak",
+        "forecast_horizon_hours": 3.0,
+        "horizon_tolerance_minutes": 300.0,
+        "nonzero_coefficients": [
+            {"feature": "temperature_2m", "coefficient": -1.2},
+        ],
+        "features": [f"feature_{index}" for index in range(17)],
+        "detailed_metrics": {
+            "test": {
+                "overall": {"accuracy": 0.9, "count": 10},
+                "binary": {
+                    "true_positive": 5,
+                    "false_positive": 0,
+                    "true_negative": 5,
+                    "false_negative": 0,
+                    "ppv": 1.0,
+                    "sensitivity": 1.0,
+                    "specificity": 1.0,
                     "positive_label": "clouds_below_peak",
                 },
                 "by_camera": {},

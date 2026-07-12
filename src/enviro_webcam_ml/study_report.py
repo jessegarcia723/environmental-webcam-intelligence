@@ -151,6 +151,9 @@ def model_summary_row(metadata_path: Path, metadata: dict[str, Any], *, experime
         "test_count": test_overall.get("count"),
         "positive_label": metadata.get("positive_label") or test_binary.get("positive_label"),
         "weather_features": ", ".join(metadata.get("weather_features") or metadata.get("features") or []),
+        "weather_feature_count": len(metadata.get("weather_features") or metadata.get("features") or []),
+        "forecast_horizon_hours": metadata.get("forecast_horizon_hours"),
+        "forecast_horizon_tolerance_minutes": metadata.get("horizon_tolerance_minutes"),
         "nonzero_coefficients": coefficient_summary(metadata),
         "metadata_path": str(metadata_path),
         "predictions_path": str(metadata.get("predictions_path") or ""),
@@ -171,6 +174,8 @@ def model_category(metadata_path: Path, metadata: dict[str, Any]) -> str:
     path_text = str(metadata_path)
     if metadata_path.parent.name == "weather_lasso_feature_selection":
         return "weather_lasso_feature_selection"
+    if model_type == "forecast_weather_lasso" or model_name == "forecast_weather_lasso_logistic":
+        return "forecast_weather_lasso"
     if model_name == "weather_lasso_logistic":
         return "weather_lasso"
     if model_type == "weather_classifier":
@@ -210,6 +215,18 @@ def count_text(value: Any) -> str:
     if value is None:
         return ""
     return str(int(value))
+
+
+def feature_count_text(value: Any) -> str:
+    if value in (None, "", 0):
+        return ""
+    return str(int(value))
+
+
+def horizon_text(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    return f"{float(value):g}h"
 
 
 def single_camera_hour_rows(
@@ -321,6 +338,7 @@ def plot_event_hours(
 
 def weather_lasso_sections(model_rows: list[dict[str, Any]]) -> dict[str, Any]:
     weather_categories = {"weather_lasso", "weather_only"}
+    forecast_categories = {"forecast_weather_lasso"}
     single_weather = [
         row for row in model_rows
         if row["event_scope"] == "single_image"
@@ -333,9 +351,16 @@ def weather_lasso_sections(model_rows: list[dict[str, Any]]) -> dict[str, Any]:
         and row["category"] in weather_categories
         and row["experiment_role"] == "model"
     ]
+    forecast_weather = [
+        row for row in model_rows
+        if row["event_scope"] == "single_image"
+        and row["category"] in forecast_categories
+        and row["experiment_role"] == "model"
+    ]
     return {
         "single_lasso": best_rows(single_weather),
         "paired_lasso": best_rows(paired_weather),
+        "forecast_lasso": best_rows(forecast_weather),
     }
 
 
@@ -453,6 +478,20 @@ def write_report_markdown(
             missing_text=(
                 "No paired-event weather-only model run was found yet. "
                 "The paired-event dataset exists, but paired weather training has not been run yet."
+            ),
+        ),
+        "",
+        "### Forecast backtest",
+        "",
+        "These models use forecast rows known before the image time. The `Features` column matters: archived historical runs may have fewer usable non-null features than live-saved forecasts.",
+        "",
+        *model_table_or_missing(
+            weather_sections["forecast_lasso"],
+            include_coefficients=True,
+            missing_text=(
+                "No forecast-weather model runs were found yet. "
+                "Run `envirocam backfill-historical-forecasts` for old annotations, "
+                "or collect live forecasts going forward, then run the study suite."
             ),
         ),
         "",
@@ -579,6 +618,8 @@ def model_table_or_missing(
         "Run",
         "Category",
         "Model",
+        "Horizon",
+        "Features",
         "Blocked",
         "Accuracy",
         "PPV",
@@ -616,6 +657,8 @@ def model_table_or_missing(
                 "---:",
                 "---:",
                 "---:",
+                "---:",
+                "---:",
             ]
             + (["---"] if include_coefficients else [])
         )
@@ -626,6 +669,8 @@ def model_table_or_missing(
             f"`{row['run']}`",
             f"`{row['category']}`",
             f"`{row['model_name']}`",
+            horizon_text(row.get("forecast_horizon_hours")),
+            feature_count_text(row.get("weather_feature_count")),
             "yes" if row.get("blocked") else "no",
             format_metric(row.get("test_accuracy")),
             format_metric(row.get("test_ppv")),
