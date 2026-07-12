@@ -586,7 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Weather variable to use. Can be passed multiple times. "
-            "Defaults to config weather.hourly_variables."
+            "Defaults to all numeric variables available in matched forecast rows."
         ),
     )
     forecast_weather_lasso.add_argument(
@@ -1662,12 +1662,7 @@ def cmd_train_forecast_weather_lasso(args: argparse.Namespace) -> int:
     positive_label = args.positive_label or config.task_positive_label(task_id)
     if not positive_label:
         raise ValueError("A positive label is required. Set task.positive_label or pass --positive-label.")
-    features = tuple(args.feature) if args.feature else config.weather.hourly_variables
-    if not features:
-        raise ValueError(
-            "Forecast weather training needs an explicit feature list. "
-            "Set weather.hourly_variables in the config or pass --feature multiple times."
-        )
+    features = tuple(args.feature)
 
     with db.connect(config.database_path) as conn:
         summary = train_forecast_weather_lasso(
