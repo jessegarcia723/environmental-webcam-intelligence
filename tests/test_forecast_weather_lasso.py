@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from enviro_webcam_ml import db
+from enviro_webcam_ml.cli import historical_forecast_run_times_by_camera
 from enviro_webcam_ml.forecast_weather_lasso import (
     ForecastWeatherLassoOptions,
     train_forecast_weather_lasso,
@@ -121,6 +122,72 @@ def test_init_db_migrates_weather_forecast_columns(tmp_path: Path) -> None:
         ).fetchone()
     assert row["forecast_lead_hours"] == 3.0
     assert row["is_forecast"] == 1
+
+
+def test_historical_forecast_run_times_are_deduped_by_camera() -> None:
+    rows = [
+        {
+            "camera_id": "camera",
+            "captured_at_utc": "2026-07-08T15:57:00+00:00",
+        },
+        {
+            "camera_id": "camera",
+            "captured_at_utc": "2026-07-08T16:05:00+00:00",
+        },
+        {
+            "camera_id": "other",
+            "captured_at_utc": "2026-07-08T16:05:00+00:00",
+        },
+    ]
+
+    run_times = historical_forecast_run_times_by_camera(
+        rows,
+        forecast_horizon_hours=3.0,
+        run_interval_hours=6,
+        adjacent_run_count=1,
+    )
+
+    assert [item.isoformat() for item in run_times["camera"]] == [
+        "2026-07-08T06:00:00+00:00",
+        "2026-07-08T12:00:00+00:00",
+    ]
+    assert [item.isoformat() for item in run_times["other"]] == [
+        "2026-07-08T06:00:00+00:00",
+        "2026-07-08T12:00:00+00:00",
+    ]
+
+
+def test_insert_weather_records_can_skip_existing_forecast_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "weather.sqlite3"
+    db.init_db(db_path)
+    with db.connect(db_path) as conn:
+        records = [
+            {
+                "valid_at_utc": "2026-07-08T15:00:00+00:00",
+                "variables": {"cloud_cover": 50},
+            }
+        ]
+        first = db.insert_weather_records(
+            conn,
+            provider="open_meteo_single_run",
+            camera_id="camera",
+            fetched_at_utc="2026-07-08T12:00:00+00:00",
+            records=records,
+            skip_existing=True,
+        )
+        second = db.insert_weather_records(
+            conn,
+            provider="open_meteo_single_run",
+            camera_id="camera",
+            fetched_at_utc="2026-07-08T12:00:00+00:00",
+            records=records,
+            skip_existing=True,
+        )
+        count = conn.execute("SELECT COUNT(*) AS c FROM weather_record").fetchone()["c"]
+
+    assert first == 1
+    assert second == 0
+    assert count == 1
 
 
 def write_training_csv(path: Path) -> None:

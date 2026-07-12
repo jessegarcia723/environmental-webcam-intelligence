@@ -5,7 +5,7 @@ import csv
 import sys
 import time
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +42,7 @@ from enviro_webcam_ml.study_report import build_study_report
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
 from enviro_webcam_ml.weather_lasso import WeatherLassoOptions, train_weather_lasso
-from enviro_webcam_ml.weather.open_meteo import fetch_forecast
+from enviro_webcam_ml.weather.open_meteo import fetch_forecast, fetch_single_run_forecast
 
 
 DEFAULT_IMAGE_MODELS = ("resnet18", "efficientnet_b0", "mobilenet_v3_small")
@@ -88,6 +88,62 @@ def build_parser() -> argparse.ArgumentParser:
     weather.add_argument("--config", required=True)
     weather.add_argument("--camera-id", help="Limit weather fetch to one camera.")
     weather.set_defaults(func=cmd_fetch_weather)
+
+    historical_forecasts = sub.add_parser(
+        "backfill-historical-forecasts",
+        help=(
+            "Fetch archived Open-Meteo Single Runs forecasts needed to backtest "
+            "forecast models against existing annotations."
+        ),
+    )
+    historical_forecasts.add_argument("--config", required=True)
+    historical_forecasts.add_argument("--task-id", help="Defaults to the config task marked default: true, or the first task.")
+    historical_forecasts.add_argument("--training-csv", help="Defaults to task.training_csv.")
+    historical_forecasts.add_argument("--camera-id", help="Limit weather backfill to one camera.")
+    historical_forecasts.add_argument(
+        "--forecast-horizon-hours",
+        type=float,
+        default=3.0,
+        help="Decision horizon to reconstruct from archived model runs.",
+    )
+    historical_forecasts.add_argument(
+        "--run-interval-hours",
+        type=int,
+        default=6,
+        help="Forecast run cadence. GFS-style global runs are usually every 6 hours.",
+    )
+    historical_forecasts.add_argument(
+        "--adjacent-run-count",
+        type=int,
+        default=1,
+        help="Also fetch this many run cycles before/after the nearest desired run.",
+    )
+    historical_forecasts.add_argument(
+        "--availability-delay-hours",
+        type=float,
+        default=0.0,
+        help=(
+            "Hours after model initialization to treat the run as knowable. "
+            "Use 0 for pure model-run backtests; use a positive value for stricter public-availability backtests."
+        ),
+    )
+    historical_forecasts.add_argument(
+        "--forecast-days",
+        type=int,
+        default=2,
+        help="Forecast horizon length to request for each archived run.",
+    )
+    historical_forecasts.add_argument(
+        "--model",
+        default="gfs_seamless",
+        help="Open-Meteo model name. Use an empty string to let Open-Meteo choose best_match.",
+    )
+    historical_forecasts.add_argument(
+        "--no-skip-existing",
+        action="store_true",
+        help="Insert records even when provider/camera/valid/known time already exists.",
+    )
+    historical_forecasts.set_defaults(func=cmd_backfill_historical_forecasts)
 
     collector = sub.add_parser(
         "run-collector",
@@ -893,6 +949,153 @@ def cmd_fetch_weather(args: argparse.Namespace) -> int:
     cameras = select_cameras(config.cameras, args.camera_id)
     fetch_weather_selected(config, cameras)
     return 0
+
+
+def cmd_backfill_historical_forecasts(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    db.init_db(config.database_path)
+    task_id = config.default_task_id if args.task_id is None else args.task_id
+    training_csv = Path(args.training_csv) if args.training_csv else config.task_training_csv_path(task_id)
+    if args.forecast_horizon_hours <= 0:
+        raise ValueError("--forecast-horizon-hours must be greater than 0.")
+    if args.run_interval_hours <= 0:
+        raise ValueError("--run-interval-hours must be greater than 0.")
+    if args.adjacent_run_count < 0:
+        raise ValueError("--adjacent-run-count must be non-negative.")
+    if args.forecast_days <= 0:
+        raise ValueError("--forecast-days must be greater than 0.")
+    if args.availability_delay_hours < 0:
+        raise ValueError("--availability-delay-hours must be non-negative.")
+
+    rows = read_training_rows_for_historical_forecast_backfill(training_csv)
+    if not rows:
+        raise ValueError(f"No usable training rows found in {training_csv}.")
+    cameras = select_cameras(config.cameras, args.camera_id)
+    camera_ids = {camera.id for camera in cameras}
+    rows = [row for row in rows if row["camera_id"] in camera_ids]
+    if not rows:
+        raise ValueError("No training rows matched the selected camera(s).")
+
+    run_times_by_camera = historical_forecast_run_times_by_camera(
+        rows,
+        forecast_horizon_hours=args.forecast_horizon_hours,
+        run_interval_hours=args.run_interval_hours,
+        adjacent_run_count=args.adjacent_run_count,
+    )
+    weather_model = args.model or None
+    total_inserted = 0
+    total_existing_skipped = 0
+    failures = []
+    with db.connect(config.database_path) as conn:
+        db.register_config(conn, config)
+        for camera in cameras:
+            run_times = run_times_by_camera.get(camera.id, [])
+            print(f"historical forecast camera={camera.id} runs={len(run_times)}")
+            for run_at in run_times:
+                known_at = run_at + timedelta(hours=args.availability_delay_hours)
+                try:
+                    fetch = fetch_single_run_forecast(
+                        camera,
+                        config.weather,
+                        run_at_utc=run_at,
+                        known_at_utc=known_at,
+                        forecast_days=args.forecast_days,
+                        model=weather_model,
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep a long backfill moving.
+                    failures.append(
+                        {
+                            "camera_id": camera.id,
+                            "run_at_utc": run_at.isoformat(),
+                            "error": str(exc),
+                        }
+                    )
+                    print(f"historical forecast failed camera={camera.id} run={run_at.isoformat()} error={exc}")
+                    continue
+                db.insert_weather_payload(
+                    conn,
+                    provider=fetch.provider,
+                    camera_id=camera.id,
+                    fetched_at_utc=fetch.downloaded_at_utc,
+                    url=fetch.url,
+                    payload=fetch.payload,
+                )
+                before_count = len(fetch.records)
+                inserted = db.insert_weather_records(
+                    conn,
+                    provider=fetch.provider,
+                    camera_id=camera.id,
+                    fetched_at_utc=fetch.known_at_utc,
+                    records=fetch.records,
+                    skip_existing=not args.no_skip_existing,
+                )
+                skipped_existing = before_count - inserted
+                total_inserted += inserted
+                total_existing_skipped += skipped_existing
+                print(
+                    "historical forecast "
+                    f"camera={camera.id} run={fetch.model_run_at_utc} "
+                    f"known_at={fetch.known_at_utc} records={inserted} "
+                    f"skipped_existing={skipped_existing}"
+                )
+
+    print(
+        "Historical forecast backfill summary: "
+        f"training_rows={len(rows)} "
+        f"runs={sum(len(items) for items in run_times_by_camera.values())} "
+        f"records_inserted={total_inserted} "
+        f"records_skipped_existing={total_existing_skipped} "
+        f"failures={len(failures)}"
+    )
+    if failures:
+        print("Failures:")
+        for failure in failures[:20]:
+            print(f"  {failure['camera_id']} {failure['run_at_utc']}: {failure['error']}")
+        if len(failures) > 20:
+            print(f"  ... {len(failures) - 20} more")
+    return 0 if total_inserted or total_existing_skipped else 1
+
+
+def read_training_rows_for_historical_forecast_backfill(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    return [
+        row
+        for row in rows
+        if row.get("camera_id") and row.get("captured_at_utc")
+    ]
+
+
+def historical_forecast_run_times_by_camera(
+    rows: list[dict[str, str]],
+    *,
+    forecast_horizon_hours: float,
+    run_interval_hours: int,
+    adjacent_run_count: int,
+) -> dict[str, list[datetime]]:
+    by_camera: dict[str, set[datetime]] = {}
+    for row in rows:
+        captured_at = parse_cli_datetime(row["captured_at_utc"])
+        desired_run_at = captured_at - timedelta(hours=forecast_horizon_hours)
+        base_run = floor_to_run_interval(desired_run_at, run_interval_hours)
+        for offset in range(-adjacent_run_count, adjacent_run_count + 1):
+            run_at = base_run + timedelta(hours=offset * run_interval_hours)
+            if run_at < captured_at:
+                by_camera.setdefault(row["camera_id"], set()).add(run_at)
+    return {camera_id: sorted(run_times) for camera_id, run_times in sorted(by_camera.items())}
+
+
+def floor_to_run_interval(value: datetime, interval_hours: int) -> datetime:
+    value = value.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    floored_hour = (value.hour // interval_hours) * interval_hours
+    return value.replace(hour=floored_hour)
+
+
+def parse_cli_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def fetch_weather_selected(config: AppConfig, cameras: Sequence[CameraConfig]) -> None:

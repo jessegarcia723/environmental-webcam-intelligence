@@ -388,7 +388,19 @@ def insert_weather_records(
     camera_id: str,
     fetched_at_utc: str,
     records: list[dict[str, Any]],
+    skip_existing: bool = False,
 ) -> int:
+    filtered_records = []
+    for record in records:
+        if skip_existing and weather_record_exists(
+            conn,
+            provider=provider,
+            camera_id=camera_id,
+            valid_at_utc=record["valid_at_utc"],
+            fetched_at_utc=fetched_at_utc,
+        ):
+            continue
+        filtered_records.append(record)
     rows = [
         (
             provider,
@@ -399,7 +411,7 @@ def insert_weather_records(
             int(weather_forecast_lead_hours(record["valid_at_utc"], fetched_at_utc) > 0),
             json.dumps(record["variables"], sort_keys=True),
         )
-        for record in records
+        for record in filtered_records
     ]
     conn.executemany(
         """
@@ -412,6 +424,29 @@ def insert_weather_records(
         rows,
     )
     return len(rows)
+
+
+def weather_record_exists(
+    conn: sqlite3.Connection,
+    *,
+    provider: str,
+    camera_id: str,
+    valid_at_utc: str,
+    fetched_at_utc: str,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM weather_record
+        WHERE provider = ?
+          AND camera_id = ?
+          AND valid_at_utc = ?
+          AND fetched_at_utc = ?
+        LIMIT 1
+        """,
+        (provider, camera_id, valid_at_utc, fetched_at_utc),
+    ).fetchone()
+    return row is not None
 
 
 def weather_forecast_lead_hours(valid_at_utc: str, fetched_at_utc: str) -> float:

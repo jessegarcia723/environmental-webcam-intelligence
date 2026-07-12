@@ -11,6 +11,7 @@ from enviro_webcam_ml.config import CameraConfig, WeatherConfig
 
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+SINGLE_RUNS_URL = "https://single-runs-api.open-meteo.com/v1/forecast"
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,19 @@ class WeatherFetch:
     provider: str
     camera_id: str
     fetched_at_utc: str
+    url: str
+    payload: dict[str, Any]
+    records: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class SingleRunForecastFetch:
+    provider: str
+    camera_id: str
+    downloaded_at_utc: str
+    model_run_at_utc: str
+    known_at_utc: str
+    weather_model: str | None
     url: str
     payload: dict[str, Any]
     records: list[dict[str, Any]]
@@ -59,6 +73,70 @@ def fetch_forecast(camera: CameraConfig, weather: WeatherConfig) -> WeatherFetch
         provider="open_meteo",
         camera_id=camera.id,
         fetched_at_utc=fetched_at,
+        url=url,
+        payload=payload,
+        records=records,
+    )
+
+
+def fetch_single_run_forecast(
+    camera: CameraConfig,
+    weather: WeatherConfig,
+    *,
+    run_at_utc: datetime,
+    known_at_utc: datetime,
+    forecast_days: int,
+    model: str | None = "gfs_seamless",
+) -> SingleRunForecastFetch:
+    variables = weather.hourly_variables or (
+        "temperature_2m",
+        "relative_humidity_2m",
+        "dew_point_2m",
+        "precipitation",
+        "cloud_cover",
+        "cloud_cover_low",
+        "pressure_msl",
+        "wind_speed_10m",
+        "wind_direction_10m",
+    )
+    run_at_utc = run_at_utc.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    known_at_utc = known_at_utc.astimezone(timezone.utc).replace(microsecond=0)
+    params = {
+        "latitude": camera.location.latitude,
+        "longitude": camera.location.longitude,
+        "hourly": ",".join(variables),
+        "timezone": "UTC",
+        "run": run_at_utc.strftime("%Y-%m-%dT%H:%M"),
+        "forecast_days": forecast_days,
+    }
+    if model:
+        params["models"] = model
+    url = f"{SINGLE_RUNS_URL}?{urlencode(params)}"
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    payload = response.json()
+    downloaded_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    records = []
+    for record in normalize_hourly(payload):
+        variables_with_run_context = dict(record["variables"])
+        variables_with_run_context["_model_run_at_utc"] = run_at_utc.isoformat()
+        variables_with_run_context["_known_at_utc"] = known_at_utc.isoformat()
+        variables_with_run_context["_downloaded_at_utc"] = downloaded_at
+        if model:
+            variables_with_run_context["_weather_model"] = model
+        records.append(
+            {
+                "valid_at_utc": record["valid_at_utc"],
+                "variables": variables_with_run_context,
+            }
+        )
+    return SingleRunForecastFetch(
+        provider="open_meteo_single_run",
+        camera_id=camera.id,
+        downloaded_at_utc=downloaded_at,
+        model_run_at_utc=run_at_utc.isoformat(),
+        known_at_utc=known_at_utc.isoformat(),
+        weather_model=model,
         url=url,
         payload=payload,
         records=records,
