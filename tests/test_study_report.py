@@ -36,7 +36,7 @@ def test_build_study_report_summarizes_existing_outputs_and_missing_experiments(
 
     report = Path(summary["report_path"]).read_text(encoding="utf-8")
     assert "Best times for single-camera and paired events" in report
-    assert "Weather-only LASSO predictors and performance" in report
+    assert "Weather-only predictors and performance" in report
     assert "efficientnet_b0" in report
     assert "weather_lasso" in report
     assert "No paired-image neural-network runs were found yet" in report

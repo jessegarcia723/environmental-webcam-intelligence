@@ -157,6 +157,8 @@ def model_category(metadata_path: Path, metadata: dict[str, Any]) -> str:
         return "weather_lasso_feature_selection"
     if model_name == "weather_lasso_logistic":
         return "weather_lasso"
+    if model_type == "weather_classifier":
+        return "weather_only"
     if model_type == "image_weather_fusion":
         if "lasso_selected" in path_text:
             return "image_plus_lasso_weather"
@@ -166,6 +168,8 @@ def model_category(metadata_path: Path, metadata: dict[str, Any]) -> str:
 
 def coefficient_summary(metadata: dict[str, Any]) -> str:
     rows = metadata.get("nonzero_coefficients") or []
+    if not rows:
+        rows = metadata.get("feature_importances") or []
     if not rows:
         return ""
     return "; ".join(
@@ -282,21 +286,22 @@ def plot_event_hours(
 
 
 def weather_lasso_sections(model_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    single_lasso = [
+    weather_categories = {"weather_lasso", "weather_only"}
+    single_weather = [
         row for row in model_rows
         if row["event_scope"] == "single_image"
-        and row["category"] == "weather_lasso"
+        and row["category"] in weather_categories
         and row["experiment_role"] == "model"
     ]
-    paired_lasso = [
+    paired_weather = [
         row for row in model_rows
         if row["event_scope"] == "paired_event"
-        and row["category"] == "weather_lasso"
+        and row["category"] in weather_categories
         and row["experiment_role"] == "model"
     ]
     return {
-        "single_lasso": best_rows(single_lasso),
-        "paired_lasso": best_rows(paired_lasso),
+        "single_lasso": best_rows(single_weather),
+        "paired_lasso": best_rows(paired_weather),
     }
 
 
@@ -400,7 +405,7 @@ def write_report_markdown(
         "",
         *top_single_hour_lines(single_hour_rows),
         "",
-        "## 2. Weather-only LASSO predictors and performance",
+        "## 2. Weather-only predictors and performance",
         "",
         "### Single-image event",
         "",
@@ -412,8 +417,8 @@ def write_report_markdown(
             weather_sections["paired_lasso"],
             include_coefficients=True,
             missing_text=(
-                "No paired-event weather LASSO run was found yet. "
-                "The paired-event dataset exists, but paired weather training is not implemented/trained yet."
+                "No paired-event weather-only model run was found yet. "
+                "The paired-event dataset exists, but paired weather training has not been run yet."
             ),
         ),
         "",
@@ -538,7 +543,7 @@ def model_table_or_missing(
         return [missing_text]
     headers = ["Run", "Category", "Model", "Blocked", "Accuracy", "PPV", "Sensitivity", "Specificity", "N"]
     if include_coefficients:
-        headers.append("Nonzero coefficients")
+        headers.append("Feature weights/importances")
     lines = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join(["---", "---", "---", "---:", "---:", "---:", "---:", "---:", "---:"] + (["---"] if include_coefficients else [])) + " |",

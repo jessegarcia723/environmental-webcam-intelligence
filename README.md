@@ -546,7 +546,7 @@ data/reports/paired_events/both_cameras_clouds_below_peak_examples/index.html
 
 Use the PNG/CSV to see what local hours the paired “best moment” events happen, and open the HTML gallery to review all both-camera-positive examples side by side.
 
-Build a higher-level study report that summarizes timing, weather-only LASSO, neural-net comparisons, image-vs-weather comparisons, and shared-vs-camera-specific model status from existing outputs:
+Build a higher-level study report that summarizes timing, weather-only models, neural-net comparisons, image-vs-weather comparisons, and shared-vs-camera-specific model status from existing outputs:
 
 ```bash
 envirocam build-study-report \
@@ -579,10 +579,25 @@ envirocam run-study-suite \
 This runs:
 
 - paired east/west event dataset generation
-- paired-event weather LASSO
+- single-image and paired-event weather-only models:
+  - LASSO logistic regression
+  - ridge logistic regression
+  - random forest
+  - histogram gradient boosting
 - paired east+west neural-net image classifier, using an event-hour-blocked split by default
 - separate camera-specific image classifiers for each configured camera
 - final `build-study-report`
+
+To train only a subset of weather-only models, pass `--weather-model` one or more times:
+
+```bash
+envirocam run-study-suite \
+  --config configs/mount_tam_training.yaml \
+  --weather-model lasso \
+  --weather-model random_forest \
+  --skip-paired-image-model \
+  --skip-camera-specific-models
+```
 
 If you only want to refresh part of the suite, use:
 

@@ -33,7 +33,7 @@ from enviro_webcam_ml.image_training import ImageTrainingOptions, train_image_mo
 from enviro_webcam_ml.image_weather_training import ImageWeatherTrainingOptions, train_image_weather_model
 from enviro_webcam_ml.model_comparison import compare_image_models
 from enviro_webcam_ml.paired_events import PairedEventOptions, build_paired_events
-from enviro_webcam_ml.study_suite import StudySuiteOptions, run_study_suite
+from enviro_webcam_ml.study_suite import DEFAULT_WEATHER_MODELS, StudySuiteOptions, run_study_suite
 from enviro_webcam_ml.study_report import build_study_report
 from enviro_webcam_ml.training_dataset import TrainingSetOptions, build_training_set
 from enviro_webcam_ml.training_env import training_environment_report
@@ -258,6 +258,15 @@ def build_parser() -> argparse.ArgumentParser:
     study_suite.add_argument("--lasso-c", type=float, default=1.0)
     study_suite.add_argument("--lasso-class-weight", default="none", choices=["none", "balanced"])
     study_suite.add_argument(
+        "--weather-model",
+        action="append",
+        choices=DEFAULT_WEATHER_MODELS,
+        help=(
+            "Weather-only model to train. Can be passed multiple times. "
+            f"Defaults to all: {', '.join(DEFAULT_WEATHER_MODELS)}."
+        ),
+    )
+    study_suite.add_argument(
         "--paired-image-split-strategy",
         default="event-hour-blocked",
         choices=["event-hour-blocked", "chronological"],
@@ -265,6 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     study_suite.add_argument("--reports-dir", help="Defaults to <data_dir>/reports.")
     study_suite.add_argument("--models-dir", help="Defaults to task.model_dir.")
+    study_suite.add_argument("--skip-weather-only-models", action="store_true")
     study_suite.add_argument("--skip-paired-weather-lasso", action="store_true")
     study_suite.add_argument("--skip-paired-image-model", action="store_true")
     study_suite.add_argument("--skip-camera-specific-models", action="store_true")
@@ -1046,9 +1056,11 @@ def cmd_run_study_suite(args: argparse.Namespace) -> int:
                 max_weather_age_minutes=args.max_weather_age_minutes,
                 lasso_c=args.lasso_c,
                 lasso_class_weight=args.lasso_class_weight,
+                weather_models=tuple(args.weather_model or DEFAULT_WEATHER_MODELS),
                 paired_image_split_strategy=args.paired_image_split_strategy,
                 output_reports_dir=Path(args.reports_dir) if args.reports_dir else None,
                 models_dir=Path(args.models_dir) if args.models_dir else None,
+                skip_weather_only_models=args.skip_weather_only_models,
                 skip_paired_weather_lasso=args.skip_paired_weather_lasso,
                 skip_paired_image_model=args.skip_paired_image_model,
                 skip_camera_specific_models=args.skip_camera_specific_models,
@@ -1059,6 +1071,8 @@ def cmd_run_study_suite(args: argparse.Namespace) -> int:
     print(f"Wrote paired events CSV to {paired['paths']['events_csv']}")
     if summary["paired_weather_lasso"]:
         print(f"Wrote paired weather LASSO metadata to {summary['paired_weather_lasso']['metadata_path']}")
+    if summary["weather_only_models"]:
+        print(f"Trained weather-only models: {len(summary['weather_only_models'])}")
     if summary["paired_image_model"]:
         print(f"Wrote paired image model metadata to {summary['paired_image_model']['metadata_path']}")
     if summary["camera_specific_models"]:
