@@ -8,7 +8,14 @@ def test_load_mount_tam_config() -> None:
     assert config.project.name == "mount_tam_marine_layer"
     assert config.cameras[0].id == "mount_tam_east_peak"
     assert config.weather.provider == "open_meteo"
+    assert config.weather.fetch_interval_seconds == 10800
+    assert "boundary_layer_height" in config.weather.hourly_variables
     assert config.default_task_id == "marine_layer_detection"
+    assert config.cameras[0].capture.source == "manifest_frames"
+    assert config.cameras[0].capture.interval_seconds == 3600
+    assert config.cameras[0].capture.manifest is not None
+    assert config.cameras[0].capture.manifest.min_frame_spacing_seconds == 300
+    assert config.cameras[0].capture.manifest.frames_key == "frames"
     assert config.task_excluded_training_labels() == ("night_unusable", "camera_artifact")
     assert config.task_comparison_camera_ids() == ("mount_tam_east_peak", "mount_tam_west_peak")
     assert config.task_training_csv_path().name == "marine_layer_detection_training.csv"

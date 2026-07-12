@@ -32,12 +32,14 @@ envirocam train-image-model
 pytest
 ```
 
-The sample config is wired to the Mount Tam still-frame endpoints embedded on the Marin Sonoma Rentals webcam page:
+The sample config is wired to ALERTCalifornia's rolling public timelapse manifests for Mount Tam:
 
-- `Axis-TamEast`: `https://cameras.alertcalifornia.org/public-camera-data/Axis-TamEast/latest-frame.jpg`
-- `Axis-TamWest`: `https://cameras.alertcalifornia.org/public-camera-data/Axis-TamWest/latest-frame.jpg`
+- `Axis-TamEast`: `https://cameras.alertcalifornia.org/public-camera-data/Axis-TamEast/1min/12-hour.json`
+- `Axis-TamWest`: `https://cameras.alertcalifornia.org/public-camera-data/Axis-TamWest/1min/12-hour.json`
 
-For a long-running local collector, use `run-collector`. It captures webcam frames every 5 minutes and fetches Open-Meteo weather every 2 hours:
+The Mount Tam config uses `capture.source: manifest_frames`, so each capture cycle reads the rolling 12-hour manifest, downloads any missing JPEG frames, and skips frames already stored in SQLite. It also sets `min_frame_spacing_seconds: 300`, which keeps roughly one frame every 5 minutes even though the upstream manifest has about 1-minute frames.
+
+For a long-running local collector, use `run-collector`. The Mount Tam config wakes the capture cycle every hour and fetches Open-Meteo weather every 3 hours:
 
 ```bash
 envirocam run-collector --config configs/mount_tam.yaml
@@ -55,6 +57,31 @@ If you only want webcam images and no scheduled weather fetches, use `capture-lo
 
 ```bash
 envirocam capture-loop --config configs/mount_tam.yaml
+```
+
+For a different site, you can keep direct still-image capture:
+
+```yaml
+capture:
+  source: image_url
+  image_url: "https://example.org/latest.jpg"
+  interval_seconds: 300
+```
+
+Or configure a rolling manifest source:
+
+```yaml
+capture:
+  source: manifest_frames
+  interval_seconds: 3600
+  manifest:
+    url: "https://example.org/camera/1min/12-hour.json"
+    frame_url_template: "https://example.org/camera/1min/{frame}"
+    frames_key: frames
+    timestamp_source: filename_epoch
+    filename_suffix: ".jpg"
+    min_frame_spacing_seconds: 300
+    skip_existing: true
 ```
 
 ## Annotation

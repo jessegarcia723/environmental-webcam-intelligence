@@ -23,7 +23,7 @@ from enviro_webcam_ml.annotation import (
     serve_annotation_app,
 )
 from enviro_webcam_ml.backup import backup_sqlite_database
-from enviro_webcam_ml.capture import capture_once
+from enviro_webcam_ml.capture import capture_camera
 from enviro_webcam_ml.clock import ClockSanityChecker
 from enviro_webcam_ml.config import AppConfig, CameraConfig, load_config
 from enviro_webcam_ml.dataset import build_manifest
@@ -765,11 +765,24 @@ def cmd_run_collector(args: argparse.Namespace) -> int:
 
 def capture_selected(config: AppConfig, cameras: Sequence[CameraConfig]) -> None:
     for camera in cameras:
-        result = capture_once(config, camera)
-        if result.ok:
-            print(f"captured camera={result.camera_id} capture_id={result.capture_id} path={result.path}")
-        else:
-            print(f"capture failed camera={result.camera_id} capture_id={result.capture_id} error={result.error}")
+        results = capture_camera(config, camera)
+        captured = 0
+        skipped = 0
+        failed = 0
+        for result in results:
+            if result.skipped:
+                skipped += 1
+            elif result.ok:
+                captured += 1
+                print(f"captured camera={result.camera_id} capture_id={result.capture_id} path={result.path}")
+            else:
+                failed += 1
+                print(f"capture failed camera={result.camera_id} capture_id={result.capture_id} error={result.error}")
+        if len(results) > 1 or skipped:
+            print(
+                f"capture summary camera={camera.id} "
+                f"captured={captured} skipped_existing={skipped} failed={failed}"
+            )
 
 
 def cmd_fetch_weather(args: argparse.Namespace) -> int:

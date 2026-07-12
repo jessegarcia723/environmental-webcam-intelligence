@@ -19,11 +19,25 @@ class LocationConfig:
 
 
 @dataclass(frozen=True)
+class ManifestCaptureConfig:
+    url: str
+    frame_url_template: str
+    frames_key: str = "frames"
+    timestamp_source: str = "filename_epoch"
+    filename_suffix: str = ".jpg"
+    min_frame_spacing_seconds: int = 0
+    max_frames_per_cycle: int | None = None
+    skip_existing: bool = True
+
+
+@dataclass(frozen=True)
 class CaptureConfig:
     image_url: str
     interval_seconds: int = 300
     timeout_seconds: int = 20
     user_agent: str = "enviro-webcam-ml/0.1"
+    source: str = "image_url"
+    manifest: ManifestCaptureConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +62,10 @@ class WeatherConfig:
     fetch_interval_seconds: int = 7200
     fetch_on_start: bool = True
     hourly_variables: tuple[str, ...] = ()
+    past_days: int | None = 2
+    forecast_days: int | None = 7
+    past_hours: int | None = None
+    forecast_hours: int | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +213,10 @@ def load_config(path: str | Path) -> AppConfig:
         fetch_interval_seconds=int(weather_raw.get("fetch_interval_seconds", 7200)),
         fetch_on_start=bool(weather_raw.get("fetch_on_start", True)),
         hourly_variables=tuple(weather_raw.get("hourly_variables", ())),
+        past_days=maybe_int(weather_raw.get("past_days", 2)),
+        forecast_days=maybe_int(weather_raw.get("forecast_days", 7)),
+        past_hours=maybe_int(weather_raw.get("past_hours")),
+        forecast_hours=maybe_int(weather_raw.get("forecast_hours")),
     )
 
     quality_raw = raw.get("quality") or {}
@@ -246,12 +268,7 @@ def parse_camera(raw: dict[str, Any]) -> CameraConfig:
         elevation_m=maybe_float(location_raw.get("elevation_m")),
         timezone=location_raw.get("timezone", "UTC"),
     )
-    capture = CaptureConfig(
-        image_url=required(capture_raw, "camera.capture.image_url"),
-        interval_seconds=int(capture_raw.get("interval_seconds", 300)),
-        timeout_seconds=int(capture_raw.get("timeout_seconds", 20)),
-        user_agent=capture_raw.get("user_agent", "enviro-webcam-ml/0.1"),
-    )
+    capture = parse_capture(capture_raw)
     pose = PoseConfig(
         version=pose_raw.get("version", "initial"),
         description=pose_raw.get("description", ""),
@@ -265,12 +282,62 @@ def parse_camera(raw: dict[str, Any]) -> CameraConfig:
     )
 
 
+def parse_capture(raw: dict[str, Any]) -> CaptureConfig:
+    source = str(raw.get("source", "image_url"))
+    if source not in {"image_url", "manifest_frames"}:
+        raise ValueError("camera.capture.source must be either 'image_url' or 'manifest_frames'.")
+    manifest_raw = raw.get("manifest") or {}
+    manifest = parse_manifest_capture(manifest_raw) if source == "manifest_frames" else None
+    image_url = raw.get("image_url")
+    if not image_url and manifest is not None:
+        image_url = manifest.frame_url_template
+    if not image_url:
+        image_url = required(raw, "camera.capture.image_url")
+    return CaptureConfig(
+        image_url=str(image_url),
+        interval_seconds=int(raw.get("interval_seconds", 300)),
+        timeout_seconds=int(raw.get("timeout_seconds", 20)),
+        user_agent=raw.get("user_agent", "enviro-webcam-ml/0.1"),
+        source=source,
+        manifest=manifest,
+    )
+
+
+def parse_manifest_capture(raw: dict[str, Any]) -> ManifestCaptureConfig:
+    max_frames = raw.get("max_frames_per_cycle")
+    parsed_max_frames = int(max_frames) if max_frames not in (None, "") else None
+    if parsed_max_frames is not None and parsed_max_frames <= 0:
+        raise ValueError("camera.capture.manifest.max_frames_per_cycle must be > 0.")
+    min_spacing = int(raw.get("min_frame_spacing_seconds", 0))
+    if min_spacing < 0:
+        raise ValueError("camera.capture.manifest.min_frame_spacing_seconds must be >= 0.")
+    timestamp_source = str(raw.get("timestamp_source", "filename_epoch"))
+    if timestamp_source != "filename_epoch":
+        raise ValueError("Only camera.capture.manifest.timestamp_source='filename_epoch' is currently supported.")
+    return ManifestCaptureConfig(
+        url=required(raw, "camera.capture.manifest.url"),
+        frame_url_template=required(raw, "camera.capture.manifest.frame_url_template"),
+        frames_key=str(raw.get("frames_key", "frames")),
+        timestamp_source=timestamp_source,
+        filename_suffix=str(raw.get("filename_suffix", ".jpg")),
+        min_frame_spacing_seconds=min_spacing,
+        max_frames_per_cycle=parsed_max_frames,
+        skip_existing=as_bool(raw.get("skip_existing", True)),
+    )
+
+
 def required(raw: dict[str, Any], path: str) -> Any:
     key = path.split(".")[-1]
     value = raw.get(key)
     if value in (None, ""):
         raise ValueError(f"Missing required config value: {path}")
     return value
+
+
+def maybe_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
 
 
 def maybe_float(value: Any) -> float | None:

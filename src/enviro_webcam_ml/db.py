@@ -239,6 +239,21 @@ def insert_capture(
     return int(cur.lastrowid)
 
 
+def capture_exists(conn: sqlite3.Connection, *, camera_id: str, captured_at_utc: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM capture
+        WHERE camera_id = ?
+          AND captured_at_utc = ?
+          AND error IS NULL
+        LIMIT 1
+        """,
+        (camera_id, captured_at_utc),
+    ).fetchone()
+    return row is not None
+
+
 def insert_image_asset(
     conn: sqlite3.Connection,
     *,

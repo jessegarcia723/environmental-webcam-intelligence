@@ -40,9 +40,15 @@ def fetch_forecast(camera: CameraConfig, weather: WeatherConfig) -> WeatherFetch
         "longitude": camera.location.longitude,
         "hourly": ",".join(variables),
         "timezone": weather.timezone,
-        "forecast_days": 7,
-        "past_days": 2,
     }
+    if weather.forecast_days is not None:
+        params["forecast_days"] = weather.forecast_days
+    if weather.past_days is not None:
+        params["past_days"] = weather.past_days
+    if weather.forecast_hours is not None:
+        params["forecast_hours"] = weather.forecast_hours
+    if weather.past_hours is not None:
+        params["past_hours"] = weather.past_hours
     url = f"{FORECAST_URL}?{urlencode(params)}"
     response = requests.get(url, timeout=30)
     response.raise_for_status()

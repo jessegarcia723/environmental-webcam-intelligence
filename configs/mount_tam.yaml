@@ -14,13 +14,22 @@ cameras:
     capture:
       # Source page:
       # https://www.rntl.net/mt-tam-cam-tamalpais-webcam/
+      source: manifest_frames
       image_url: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamEast/latest-frame.jpg"
-      interval_seconds: 300
+      interval_seconds: 3600
       timeout_seconds: 20
       user_agent: "enviro-webcam-ml/0.1 (+local research MVP)"
+      manifest:
+        url: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamEast/1min/12-hour.json"
+        frame_url_template: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamEast/1min/{frame}"
+        frames_key: frames
+        timestamp_source: filename_epoch
+        filename_suffix: ".jpg"
+        min_frame_spacing_seconds: 300
+        skip_existing: true
     pose:
       version: "initial"
-      description: "ALERTCalifornia Axis-TamEast latest-frame still image."
+      description: "ALERTCalifornia Axis-TamEast rolling 12-hour manifest frames."
 
   - id: mount_tam_west_peak
     name: Mount Tam West Peak
@@ -32,19 +41,30 @@ cameras:
     capture:
       # Source page:
       # https://www.rntl.net/mt-tam-cam-tamalpais-webcam/
+      source: manifest_frames
       image_url: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamWest/latest-frame.jpg"
-      interval_seconds: 300
+      interval_seconds: 3600
       timeout_seconds: 20
       user_agent: "enviro-webcam-ml/0.1 (+local research MVP)"
+      manifest:
+        url: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamWest/1min/12-hour.json"
+        frame_url_template: "https://cameras.alertcalifornia.org/public-camera-data/Axis-TamWest/1min/{frame}"
+        frames_key: frames
+        timestamp_source: filename_epoch
+        filename_suffix: ".jpg"
+        min_frame_spacing_seconds: 300
+        skip_existing: true
     pose:
       version: "initial"
-      description: "ALERTCalifornia Axis-TamWest latest-frame still image."
+      description: "ALERTCalifornia Axis-TamWest rolling 12-hour manifest frames."
 
 weather:
   provider: open_meteo
   timezone: UTC
-  fetch_interval_seconds: 7200
+  fetch_interval_seconds: 10800
   fetch_on_start: true
+  past_days: 2
+  forecast_days: 7
   hourly_variables:
     - temperature_2m
     - relative_humidity_2m
@@ -55,6 +75,14 @@ weather:
     - cloud_cover_low
     - cloud_cover_mid
     - cloud_cover_high
+    - boundary_layer_height
+    - freezing_level_height
+    - cloud_cover_1000hPa
+    - cloud_cover_975hPa
+    - cloud_cover_950hPa
+    - geopotential_height_1000hPa
+    - geopotential_height_975hPa
+    - geopotential_height_950hPa
     - pressure_msl
     - surface_pressure
     - wind_speed_10m
