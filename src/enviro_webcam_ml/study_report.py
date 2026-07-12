@@ -132,6 +132,22 @@ def model_summary_row(metadata_path: Path, metadata: dict[str, Any], *, experime
         "test_ppv": test_binary.get("ppv"),
         "test_sensitivity": test_binary.get("sensitivity"),
         "test_specificity": test_binary.get("specificity"),
+        "test_true_positive": test_binary.get("true_positive"),
+        "test_false_positive": test_binary.get("false_positive"),
+        "test_true_negative": test_binary.get("true_negative"),
+        "test_false_negative": test_binary.get("false_negative"),
+        "test_ppv_fraction": metric_fraction(
+            test_binary.get("true_positive"),
+            none_sum(test_binary.get("true_positive"), test_binary.get("false_positive")),
+        ),
+        "test_sensitivity_fraction": metric_fraction(
+            test_binary.get("true_positive"),
+            none_sum(test_binary.get("true_positive"), test_binary.get("false_negative")),
+        ),
+        "test_specificity_fraction": metric_fraction(
+            test_binary.get("true_negative"),
+            none_sum(test_binary.get("true_negative"), test_binary.get("false_positive")),
+        ),
         "test_count": test_overall.get("count"),
         "positive_label": metadata.get("positive_label") or test_binary.get("positive_label"),
         "weather_features": ", ".join(metadata.get("weather_features") or metadata.get("features") or []),
@@ -176,6 +192,24 @@ def coefficient_summary(metadata: dict[str, Any]) -> str:
         f"{row.get('feature')}={float(row.get('coefficient', 0.0)):.3g}"
         for row in rows
     )
+
+
+def none_sum(*values: Any) -> int | None:
+    if any(value is None for value in values):
+        return None
+    return sum(int(value) for value in values)
+
+
+def metric_fraction(numerator: Any, denominator: Any) -> str:
+    if numerator is None or denominator is None:
+        return ""
+    return f"{int(numerator)}/{int(denominator)}"
+
+
+def count_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(int(value))
 
 
 def single_camera_hour_rows(
@@ -541,12 +575,51 @@ def model_table_or_missing(
 ) -> list[str]:
     if not rows:
         return [missing_text]
-    headers = ["Run", "Category", "Model", "Blocked", "Accuracy", "PPV", "Sensitivity", "Specificity", "N"]
+    headers = [
+        "Run",
+        "Category",
+        "Model",
+        "Blocked",
+        "Accuracy",
+        "PPV",
+        "PPV frac",
+        "Sensitivity",
+        "Sensitivity frac",
+        "Specificity",
+        "Specificity frac",
+        "TP",
+        "FP",
+        "TN",
+        "FN",
+        "N",
+    ]
     if include_coefficients:
         headers.append("Feature weights/importances")
     lines = [
         "| " + " | ".join(headers) + " |",
-        "| " + " | ".join(["---", "---", "---", "---:", "---:", "---:", "---:", "---:", "---:"] + (["---"] if include_coefficients else [])) + " |",
+        "| "
+        + " | ".join(
+            [
+                "---",
+                "---",
+                "---",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+                "---:",
+            ]
+            + (["---"] if include_coefficients else [])
+        )
+        + " |",
     ]
     for row in rows:
         values = [
@@ -556,8 +629,15 @@ def model_table_or_missing(
             "yes" if row.get("blocked") else "no",
             format_metric(row.get("test_accuracy")),
             format_metric(row.get("test_ppv")),
+            row.get("test_ppv_fraction") or "",
             format_metric(row.get("test_sensitivity")),
+            row.get("test_sensitivity_fraction") or "",
             format_metric(row.get("test_specificity")),
+            row.get("test_specificity_fraction") or "",
+            count_text(row.get("test_true_positive")),
+            count_text(row.get("test_false_positive")),
+            count_text(row.get("test_true_negative")),
+            count_text(row.get("test_false_negative")),
             str(row.get("test_count") or ""),
         ]
         if include_coefficients:

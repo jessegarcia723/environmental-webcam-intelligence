@@ -37,6 +37,8 @@ def test_build_study_report_summarizes_existing_outputs_and_missing_experiments(
     report = Path(summary["report_path"]).read_text(encoding="utf-8")
     assert "Best times for single-camera and paired events" in report
     assert "Weather-only predictors and performance" in report
+    assert "PPV frac" in report
+    assert "7/10" in report
     assert "efficientnet_b0" in report
     assert "weather_lasso" in report
     assert "No paired-image neural-network runs were found yet" in report
@@ -166,6 +168,10 @@ def write_model_metadata(
             "test": {
                 "overall": {"accuracy": accuracy, "count": 10},
                 "binary": {
+                    "true_positive": 7,
+                    "false_positive": 3,
+                    "true_negative": 0,
+                    "false_negative": 0,
                     "ppv": ppv,
                     "sensitivity": sensitivity,
                     "specificity": specificity,
@@ -196,6 +202,10 @@ def write_weather_lasso_metadata(path: Path) -> None:
             "test": {
                 "overall": {"accuracy": 0.8, "count": 10},
                 "binary": {
+                    "true_positive": 7,
+                    "false_positive": 3,
+                    "true_negative": 0,
+                    "false_negative": 0,
                     "ppv": 0.7,
                     "sensitivity": 1.0,
                     "specificity": 0.75,
