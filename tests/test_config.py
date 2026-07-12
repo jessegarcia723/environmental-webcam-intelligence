@@ -8,7 +8,7 @@ def test_load_mount_tam_config() -> None:
     assert config.project.name == "mount_tam_marine_layer"
     assert config.cameras[0].id == "mount_tam_east_peak"
     assert config.weather.provider == "open_meteo"
-    assert config.weather.fetch_interval_seconds == 10800
+    assert config.weather.fetch_interval_seconds == 3600
     assert "boundary_layer_height" in config.weather.hourly_variables
     assert config.default_task_id == "marine_layer_detection"
     assert config.cameras[0].capture.source == "manifest_frames"

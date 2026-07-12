@@ -61,7 +61,7 @@ cameras:
 weather:
   provider: open_meteo
   timezone: UTC
-  fetch_interval_seconds: 10800
+  fetch_interval_seconds: 3600
   fetch_on_start: true
   past_days: 2
   forecast_days: 7
