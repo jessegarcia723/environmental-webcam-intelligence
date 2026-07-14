@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 from PIL import Image
@@ -116,6 +117,42 @@ def test_build_training_set_uses_adjudicated_disagreement_label(tmp_path: Path) 
     assert summary["skipped"] == {}
     assert "clouds_below_peak" in csv_text
     assert "adjudicated" in csv_text
+
+
+def test_build_training_set_respects_candidate_min_spacing(tmp_path: Path) -> None:
+    config = load_config(Path("configs/mount_tam.yaml"))
+    db_path = tmp_path / "training.sqlite3"
+    output = tmp_path / "training.csv"
+    image_path = tmp_path / "data" / "raw" / "mount_tam_east_peak" / "frame.jpg"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), color=(100, 120, 140)).save(image_path)
+
+    db.init_db(db_path)
+    with db.connect(db_path) as conn:
+        db.register_config(conn, config)
+        first = insert_capture_with_image(conn, image_path, "2026-07-08T12:00:00+00:00", "a")
+        too_close = insert_capture_with_image(conn, image_path, "2026-07-08T12:01:00+00:00", "b")
+        spaced = insert_capture_with_image(conn, image_path, "2026-07-08T12:05:00+00:00", "c")
+        for capture_id in (first, too_close, spaced):
+            add_two_labels(conn, capture_id, "clouds_below_peak", "clouds_below_peak")
+
+        summary = build_training_set(
+            conn,
+            config=config,
+            options=TrainingSetOptions(
+                task_id="marine_layer_detection",
+                output_path=output,
+                exclude_labels=config.task_excluded_training_labels("marine_layer_detection"),
+            ),
+        )
+
+    csv_rows = list(csv.DictReader(output.open(encoding="utf-8")))
+    capture_ids = {int(row["capture_id"]) for row in csv_rows}
+    assert summary["candidate_min_spacing_seconds"] == 300
+    assert summary["row_count"] == 2
+    assert too_close not in capture_ids
+    assert first in capture_ids
+    assert spaced in capture_ids
 
 
 def test_stratified_splits_keep_minority_label_in_each_available_split() -> None:

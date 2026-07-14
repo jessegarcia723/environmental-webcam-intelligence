@@ -119,6 +119,7 @@ tasks:
       - night_unusable
       - camera_artifact
     positive_label: clouds_below_peak
+    candidate_min_spacing_seconds: 300
     negative_labels:
       - no_clouds_below_peak
     uncertain_labels:

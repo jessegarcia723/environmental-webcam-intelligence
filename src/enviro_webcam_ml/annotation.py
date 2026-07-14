@@ -144,6 +144,7 @@ def make_handler(config: AppConfig, options: AnnotationServerOptions):
                     annotator=annotator,
                     exclude_ids=exclude_ids,
                     data_dir=config.data_dir,
+                    min_spacing_seconds=config.task_candidate_min_spacing_seconds(task_id),
                 )
             self.send_json({"frame": row})
 
@@ -488,6 +489,7 @@ def next_unannotated_frame(
     annotator: str,
     exclude_ids: list[int] | None = None,
     data_dir: Path | None = None,
+    min_spacing_seconds: int = 0,
 ) -> dict[str, Any] | None:
     exclude_ids = exclude_ids or []
     exclude_clause = ""
@@ -496,8 +498,13 @@ def next_unannotated_frame(
         placeholders = ", ".join("?" for _ in exclude_ids)
         exclude_clause = f"AND c.id NOT IN ({placeholders})"
         params.extend(exclude_ids)
+    eligible_ids = None
+    if min_spacing_seconds > 0:
+        eligible_ids = spaced_capture_ids(conn, min_spacing_seconds=min_spacing_seconds)
+        if not eligible_ids:
+            return None
 
-    row = conn.execute(
+    rows = conn.execute(
         f"""
         SELECT
           c.id AS capture_id,
@@ -526,10 +533,10 @@ def next_unannotated_frame(
           )
           {exclude_clause}
         ORDER BY c.captured_at_utc, c.camera_id
-        LIMIT 1
         """,
         params,
-    ).fetchone()
+    ).fetchall()
+    row = next((row for row in rows if eligible_ids is None or int(row["capture_id"]) in eligible_ids), None)
     if row is None:
         return None
     flags = row["flags_json"]
@@ -551,6 +558,36 @@ def next_unannotated_frame(
         "is_duplicate": bool(row["is_duplicate"]) if row["is_duplicate"] is not None else None,
         "quality_flags": json.loads(flags) if flags else {},
     }
+
+
+def spaced_capture_ids(conn: sqlite3.Connection, *, min_spacing_seconds: int) -> set[int]:
+    rows = conn.execute(
+        """
+        SELECT c.id, c.camera_id, c.captured_at_utc
+        FROM capture c
+        JOIN image_asset ia ON ia.capture_id = c.id
+        WHERE c.error IS NULL
+        ORDER BY c.camera_id, c.captured_at_utc, c.id
+        """
+    ).fetchall()
+    if min_spacing_seconds <= 0:
+        return {int(row["id"]) for row in rows}
+
+    selected: set[int] = set()
+    last_selected_by_camera: dict[str, datetime] = {}
+    for row in rows:
+        captured_at = parse_utc_datetime(row["captured_at_utc"])
+        camera_id = str(row["camera_id"])
+        last_selected = last_selected_by_camera.get(camera_id)
+        if last_selected is None or (captured_at - last_selected).total_seconds() >= min_spacing_seconds:
+            selected.add(int(row["id"]))
+            last_selected_by_camera[camera_id] = captured_at
+    return selected
+
+
+def parse_utc_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=ZoneInfo("UTC"))
 
 
 def save_annotation(

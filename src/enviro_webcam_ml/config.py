@@ -150,6 +150,13 @@ class AppConfig:
         task = self.task(task_id)
         return tuple(str(label) for label in task.get("excluded_training_labels", ()))
 
+    def task_candidate_min_spacing_seconds(self, task_id: str | None = None) -> int:
+        task = self.task(task_id)
+        value = task.get("candidate_min_spacing_seconds", 0)
+        if value in (None, ""):
+            return 0
+        return int(value)
+
     def task_comparison_camera_ids(self, task_id: str | None = None) -> tuple[str, ...]:
         task = self.task(task_id)
         groups = task.get("comparison_groups") or {}

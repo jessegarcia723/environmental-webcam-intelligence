@@ -17,6 +17,7 @@ def test_load_mount_tam_config() -> None:
     assert config.cameras[0].capture.manifest.min_frame_spacing_seconds == 300
     assert config.cameras[0].capture.manifest.frames_key == "frames"
     assert config.task_excluded_training_labels() == ("night_unusable", "camera_artifact")
+    assert config.task_candidate_min_spacing_seconds() == 300
     assert config.task_comparison_camera_ids() == ("mount_tam_east_peak", "mount_tam_west_peak")
     assert config.task_training_csv_path().name == "marine_layer_detection_training.csv"
     assert config.task_positive_label() == "clouds_below_peak"

@@ -1471,6 +1471,7 @@ def cmd_build_training_set(args: argparse.Namespace) -> int:
         )
     print(f"Wrote training set to {Path(summary['output_path']).resolve()}")
     print(f"Rows: {summary['row_count']}")
+    print(f"Candidate min spacing seconds: {summary['candidate_min_spacing_seconds']}")
     print(f"Labels: {summary['label_counts']}")
     print(f"Splits: {summary['split_counts']}")
     print("Split labels:")

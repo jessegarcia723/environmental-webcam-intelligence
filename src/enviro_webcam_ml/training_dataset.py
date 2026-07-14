@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from enviro_webcam_ml.annotation import task_labels
+from enviro_webcam_ml.annotation import spaced_capture_ids, task_labels
 from enviro_webcam_ml.config import AppConfig
 from enviro_webcam_ml.image_paths import resolve_image_path
 
@@ -26,6 +26,7 @@ class TrainingSetOptions:
     val_fraction: float = 0.15
     test_fraction: float = 0.15
     allow_missing_images: bool = False
+    min_spacing_seconds: int = 0
 
 
 def build_training_set(
@@ -39,7 +40,8 @@ def build_training_set(
         options.val_fraction,
         options.test_fraction,
     )
-    rows = candidate_rows(conn, task_id=options.task_id)
+    min_spacing_seconds = options.min_spacing_seconds or config.task_candidate_min_spacing_seconds(options.task_id)
+    rows = candidate_rows(conn, task_id=options.task_id, min_spacing_seconds=min_spacing_seconds)
     grouped = group_latest_annotations(rows)
     adjudications = adjudication_labels(conn, task_id=options.task_id)
     configured_labels = set(task_labels(config, options.task_id))
@@ -122,10 +124,21 @@ def build_training_set(
         "split_counts": dict(sorted(Counter(row["split"] for row in selected).items())),
         "split_label_counts": split_label_counts(selected),
         "skipped": dict(sorted(skipped.items())),
+        "candidate_min_spacing_seconds": min_spacing_seconds,
     }
 
 
-def candidate_rows(conn: sqlite3.Connection, *, task_id: str) -> list[dict[str, Any]]:
+def candidate_rows(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    min_spacing_seconds: int = 0,
+) -> list[dict[str, Any]]:
+    eligible_ids = None
+    if min_spacing_seconds > 0:
+        eligible_ids = spaced_capture_ids(conn, min_spacing_seconds=min_spacing_seconds)
+        if not eligible_ids:
+            return []
     rows = conn.execute(
         """
         SELECT
@@ -153,7 +166,11 @@ def candidate_rows(conn: sqlite3.Connection, *, task_id: str) -> list[dict[str, 
         """,
         (task_id,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [
+        dict(row)
+        for row in rows
+        if eligible_ids is None or int(row["capture_id"]) in eligible_ids
+    ]
 
 
 def group_latest_annotations(rows: list[dict[str, Any]]) -> dict[int, dict[str, dict[str, Any]]]:
