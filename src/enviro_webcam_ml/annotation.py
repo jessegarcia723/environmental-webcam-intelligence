@@ -532,7 +532,7 @@ def next_unannotated_frame(
               AND COALESCE(a.annotator, '') = ?
           )
           {exclude_clause}
-        ORDER BY c.captured_at_utc, c.camera_id
+        ORDER BY c.camera_id, c.captured_at_utc, c.id
         """,
         params,
     ).fetchall()

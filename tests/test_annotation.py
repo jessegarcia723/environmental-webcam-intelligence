@@ -177,6 +177,65 @@ def test_next_unannotated_frame_respects_min_spacing(tmp_path: Path) -> None:
     assert second["capture_id"] == spaced_capture_id
 
 
+def test_next_unannotated_frame_orders_by_camera_then_time(tmp_path: Path) -> None:
+    config = load_config(Path("configs/mount_tam.yaml"))
+    db_path = tmp_path / "annotations.sqlite3"
+    image_path = tmp_path / "frame.jpg"
+    Image.new("RGB", (8, 8), color=(120, 130, 140)).save(image_path)
+
+    db.init_db(db_path)
+    with db.connect(db_path) as conn:
+        db.register_config(conn, config)
+        east_first = insert_capture_with_asset(
+            conn,
+            image_path,
+            camera_id="mount_tam_east_peak",
+            captured_at_utc="2026-07-08T12:00:00+00:00",
+            sha256="east1",
+        )
+        west_first = insert_capture_with_asset(
+            conn,
+            image_path,
+            camera_id="mount_tam_west_peak",
+            captured_at_utc="2026-07-08T12:00:00+00:00",
+            sha256="west1",
+        )
+        east_second = insert_capture_with_asset(
+            conn,
+            image_path,
+            camera_id="mount_tam_east_peak",
+            captured_at_utc="2026-07-08T12:05:00+00:00",
+            sha256="east2",
+        )
+
+        first = next_unannotated_frame(
+            conn,
+            task_id="marine_layer_detection",
+            annotator="jesse",
+            min_spacing_seconds=300,
+        )
+        assert first is not None
+        assert first["capture_id"] == east_first
+        save_annotation(
+            conn,
+            capture_id=east_first,
+            task_id="marine_layer_detection",
+            label="clouds_below_peak",
+            annotator="jesse",
+        )
+
+        second = next_unannotated_frame(
+            conn,
+            task_id="marine_layer_detection",
+            annotator="jesse",
+            min_spacing_seconds=300,
+        )
+
+    assert west_first != east_second
+    assert second is not None
+    assert second["capture_id"] == east_second
+
+
 def test_image_path_for_capture_remaps_old_data_root(tmp_path: Path) -> None:
     db_path = tmp_path / "annotations.sqlite3"
     data_dir = tmp_path / "synced" / "data"
